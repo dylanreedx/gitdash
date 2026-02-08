@@ -14,10 +14,13 @@ import (
 	"github.com/dylan/gitdash/config"
 	"github.com/dylan/gitdash/git"
 	"github.com/dylan/gitdash/nvim"
+	"github.com/dylan/gitdash/conductor"
 	"github.com/dylan/gitdash/tui/branchpicker"
 	"github.com/dylan/gitdash/tui/commitview"
+	"github.com/dylan/gitdash/tui/conductorpane"
 	"github.com/dylan/gitdash/tui/dashboard"
 	"github.com/dylan/gitdash/tui/diffview"
+	"github.com/dylan/gitdash/tui/featurelinker"
 	"github.com/dylan/gitdash/tui/graphpane"
 	"github.com/dylan/gitdash/tui/help"
 	"github.com/dylan/gitdash/tui/icons"
@@ -37,6 +40,15 @@ const (
 	BranchPickerView
 )
 
+// FocusPanel tracks which column has focus in the 3-column layout.
+type FocusPanel int
+
+const (
+	FocusDashboard  FocusPanel = iota
+	FocusGraph
+	FocusConductor
+)
+
 type App struct {
 	cfg        config.Config
 	activeView ActiveView
@@ -44,17 +56,24 @@ type App struct {
 	statusMsg  string
 	statusTime time.Time
 
-	dashboard    dashboard.Model
-	diffView     diffview.Model
-	commitView   commitview.Model
-	helpView     help.Model
-	graphPane    graphpane.Model
-	branchPicker branchpicker.Model
+	dashboard      dashboard.Model
+	diffView       diffview.Model
+	commitView     commitview.Model
+	helpView       help.Model
+	graphPane      graphpane.Model
+	branchPicker   branchpicker.Model
+	conductorPane  conductorpane.Model
+	featureLinker  featurelinker.Model
 
 	showGraph       bool
 	graphFocused    bool
+	focusPanel      FocusPanel
 	graphRepo       string // repo path of last graph fetch
 	lastDetailHash  string // hash of last fetched commit detail
+	conductorRepo   string // repo path of last conductor fetch
+
+	// Conductor data cache (per repo)
+	conductorData   map[string]*conductor.ConductorData
 
 	// Animated loaders
 	spinners      map[shared.LoaderOp]spinner.Model
@@ -84,7 +103,11 @@ func NewApp(cfg config.Config) App {
 		helpView:       help.New(),
 		graphPane:      gp,
 		branchPicker:   branchpicker.New(),
+		conductorPane:  conductorpane.New(),
+		featureLinker:  featurelinker.New(),
 		showGraph:      cfg.ResolvedShowGraph(),
+		focusPanel:     FocusDashboard,
+		conductorData:  make(map[string]*conductor.ConductorData),
 		spinners:       make(map[shared.LoaderOp]spinner.Model),
 		spinnerLabels:  make(map[shared.LoaderOp]string),
 		pushingRepoIdx: -1,
@@ -146,6 +169,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.commitView.SetSize(msg.Width, msg.Height)
 		a.helpView.SetSize(msg.Width, msg.Height)
 		a.branchPicker.SetSize(msg.Width, msg.Height)
+		a.featureLinker.SetSize(msg.Width, msg.Height)
 		return a, nil
 
 	case shared.LoaderStartMsg:
@@ -226,7 +250,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.activeView = DashboardView
 		a.setFeedback(shared.FeedbackSuccess, "Committed successfully", "", "")
-		return a, refreshAllStatus(a.cfg)
+		cmds := []tea.Cmd{refreshAllStatus(a.cfg)}
+		// Try to match commit to conductor feature
+		if repo, ok := a.dashboard.SelectedRepo(); ok {
+			commitMsg := a.commitView.Value()
+			cmds = append(cmds, matchFeaturesCmd(repo.Path, "", commitMsg, nil))
+		}
+		return a, tea.Batch(cmds...)
 
 	case shared.AICommitMsgMsg:
 		a.stopLoader(shared.OpGenerate)
@@ -257,6 +287,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setFeedback(shared.FeedbackError, "Export failed: "+msg.Err.Error(), msg.Err.Error(), shared.OpExport)
 		} else {
 			a.setFeedback(shared.FeedbackSuccess, fmt.Sprintf("Context copied to clipboard (%d commits across %d repos)", msg.NumCommits, msg.NumRepos), "", shared.OpExport)
+		}
+		return a, nil
+
+	case conductorDataMsg:
+		a.conductorData[msg.RepoPath] = msg.Data
+		a.conductorPane.SetData(msg.Data)
+		return a, nil
+
+	case featureMatchMsg:
+		if len(msg.Matches) > 0 {
+			a.featureLinker.Show(msg.Matches, msg.CommitHash, msg.CommitMsg)
+		}
+		return a, nil
+
+	case shared.FeatureLinkedMsg:
+		if msg.Err == nil {
+			a.setFeedback(shared.FeedbackSuccess, "Linked to: "+msg.Description, "", "")
+			// Refresh conductor data
+			if repo, ok := a.dashboard.SelectedRepo(); ok {
+				a.conductorRepo = "" // force refresh
+				return a, refreshConductorCmd(repo.Path)
+			}
 		}
 		return a, nil
 
@@ -337,7 +389,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Only auto-refresh on the dashboard view to avoid disrupting other views
 		if a.activeView == DashboardView || a.activeView == BranchPickerView {
-			return a, tea.Batch(refreshAllStatus(a.cfg), pollTickCmd())
+			cmds := []tea.Cmd{refreshAllStatus(a.cfg), pollTickCmd()}
+			// Refresh conductor data on the same tick
+			if repo, ok := a.dashboard.SelectedRepo(); ok {
+				cmds = append(cmds, refreshConductorCmd(repo.Path))
+			}
+			return a, tea.Batch(cmds...)
 		}
 		return a, pollTickCmd()
 
@@ -398,10 +455,41 @@ func (a App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// When graph is focused, route keys to the graph pane
-	if a.graphFocused {
+	// Feature linker overlay takes priority
+	if a.featureLinker.IsVisible() {
+		result := a.featureLinker.HandleKey(msg)
+		switch result.Action {
+		case featurelinker.ActionLink:
+			a.featureLinker.Hide()
+			if result.Feature != nil {
+				if repo, ok := a.dashboard.SelectedRepo(); ok {
+					return a, linkFeatureCmd(repo.Path, result.Feature.Feature.ID,
+						a.featureLinker.CommitHash(), a.featureLinker.CommitMsg(), nil)
+				}
+			}
+			return a, nil
+		case featurelinker.ActionSkip:
+			a.featureLinker.Hide()
+			return a, nil
+		}
+		return a, nil
+	}
+
+	// When conductor is focused, route keys to conductor pane
+	if a.focusPanel == FocusConductor {
 		switch {
-		case key.Matches(msg, shared.Keys.FocusLeft), key.Matches(msg, shared.Keys.Escape):
+		case key.Matches(msg, shared.Keys.FocusLeft):
+			a.focusPanel = FocusGraph
+			a.graphFocused = true
+			return a, nil
+		case key.Matches(msg, shared.Keys.Escape):
+			// If in detail section, let conductor handle Escape (back to list)
+			if a.conductorPane.ActiveSection() == conductorpane.DetailSection {
+				var cmd tea.Cmd
+				a.conductorPane, cmd = a.conductorPane.Update(msg)
+				return a, cmd
+			}
+			a.focusPanel = FocusDashboard
 			a.graphFocused = false
 			return a, nil
 		case key.Matches(msg, shared.Keys.Quit):
@@ -409,6 +497,36 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, shared.Keys.ToggleGraph):
 			a.showGraph = false
 			a.graphFocused = false
+			a.focusPanel = FocusDashboard
+			a.layoutSizes()
+			return a, nil
+		default:
+			var cmd tea.Cmd
+			a.conductorPane, cmd = a.conductorPane.Update(msg)
+			return a, cmd
+		}
+	}
+
+	// When graph is focused, route keys to the graph pane
+	if a.graphFocused || a.focusPanel == FocusGraph {
+		switch {
+		case key.Matches(msg, shared.Keys.FocusLeft), key.Matches(msg, shared.Keys.Escape):
+			a.graphFocused = false
+			a.focusPanel = FocusDashboard
+			return a, nil
+		case key.Matches(msg, shared.Keys.FocusRight):
+			if a.showGraph && a.width > 80 {
+				a.focusPanel = FocusConductor
+				a.graphFocused = false
+				return a, nil
+			}
+			return a, nil
+		case key.Matches(msg, shared.Keys.Quit):
+			return a, tea.Quit
+		case key.Matches(msg, shared.Keys.ToggleGraph):
+			a.showGraph = false
+			a.graphFocused = false
+			a.focusPanel = FocusDashboard
 			a.layoutSizes()
 			return a, nil
 		default:
@@ -436,16 +554,20 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, shared.Keys.FocusRight):
 		if a.showGraph {
 			a.graphFocused = true
+			a.focusPanel = FocusGraph
 		}
 		return a, nil
 
 	case key.Matches(msg, shared.Keys.ToggleGraph):
 		a.showGraph = !a.showGraph
 		a.graphFocused = false
+		a.focusPanel = FocusDashboard
 		a.layoutSizes()
 		if a.showGraph {
-			a.graphRepo = "" // force refresh
-			return a, a.maybeRefreshGraph()
+			a.graphRepo = ""     // force refresh
+			a.conductorRepo = "" // force refresh
+			cmds := []tea.Cmd{a.maybeRefreshGraph(), a.maybeRefreshConductor()}
+			return a, tea.Batch(cmds...)
 		}
 		return a, nil
 
@@ -688,32 +810,13 @@ func (a App) View() string {
 
 	switch a.activeView {
 	case DashboardView:
-		dashView := a.dashboard.View()
-		if a.showGraph {
-			// Lock dashboard to fixed height so it doesn't shift when right pane scrolls
-			dashW := a.width - a.width/2
-			dashView = lipgloss.NewStyle().Width(dashW).Height(contentH).MaxHeight(contentH).Render(dashView)
-
-			var graphView string
-			if a.graphFocused {
-				graphView = a.graphPane.ViewFocused()
-			} else {
-				graphView = a.graphPane.View()
-			}
-			view = lipgloss.JoinHorizontal(lipgloss.Top, dashView, graphView)
-		} else {
-			view = dashView
-		}
+		view = a.renderDashboardLayout(contentH)
 		view += a.renderStatusBar()
-	case BranchPickerView:
-		dashView := a.dashboard.View()
-		if a.showGraph {
-			dashW := a.width - a.width/2
-			dashView = lipgloss.NewStyle().Width(dashW).Height(contentH).MaxHeight(contentH).Render(dashView)
-			view = lipgloss.JoinHorizontal(lipgloss.Top, dashView, a.graphPane.View())
-		} else {
-			view = dashView
+		if a.featureLinker.IsVisible() {
+			view = a.featureLinker.ViewOverlay(view, a.width, a.height)
 		}
+	case BranchPickerView:
+		view = a.renderDashboardLayout(contentH)
 		view += a.renderStatusBar()
 		view = a.branchPicker.ViewOverlay(view, a.width, a.height)
 	case DiffView:
@@ -731,12 +834,23 @@ func (a *App) layoutSizes() {
 		contentH = 3
 	}
 
-	if a.showGraph && a.width > 40 {
-		// Side-by-side: dashboard left ~50%, graph right ~50%
+	if a.showGraph && a.width > 80 {
+		// 3-column layout: dashboard | graph | conductor
+		dashPct := a.cfg.ResolvedDashboardWidth()
+		dashW := a.width * dashPct / 100
+		conductorW := a.width * 30 / 100
+		graphW := a.width - dashW - conductorW
+		if graphW < 20 {
+			graphW = 20
+		}
+		a.dashboard.SetSize(dashW, contentH)
+		a.graphPane.SetSize(graphW-1, contentH)      // -1 for left border
+		a.conductorPane.SetSize(conductorW-1, contentH) // -1 for left border
+	} else if a.showGraph && a.width > 40 {
+		// 2-column fallback for narrower terminals
 		graphW := a.width / 2
 		dashW := a.width - graphW
 		a.dashboard.SetSize(dashW, contentH)
-		// graphPane width accounts for left border (1 char)
 		a.graphPane.SetSize(graphW-1, contentH)
 	} else {
 		a.dashboard.SetSize(a.width, contentH)
@@ -751,12 +865,20 @@ func (a *App) maybeRefreshGraph() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	if repo.Path == a.graphRepo {
+	var cmds []tea.Cmd
+	if repo.Path != a.graphRepo {
+		a.graphRepo = repo.Path
+		maxCommits := a.cfg.ResolvedGraphMaxCommits()
+		cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
+	}
+	if repo.Path != a.conductorRepo {
+		a.conductorRepo = repo.Path
+		cmds = append(cmds, fetchConductorCmd(repo.Path))
+	}
+	if len(cmds) == 0 {
 		return nil
 	}
-	a.graphRepo = repo.Path
-	maxCommits := a.cfg.ResolvedGraphMaxCommits()
-	return fetchGraphCmd(repo.Path, maxCommits)
+	return tea.Batch(cmds...)
 }
 
 func (a App) renderStatusBar() string {
@@ -794,6 +916,19 @@ func (a App) renderStatusBar() string {
 		status += " │ " + a.statusMsg
 	}
 
+	// Conductor summary in status bar
+	if repo, ok := a.dashboard.SelectedRepo(); ok {
+		if data, exists := a.conductorData[repo.Path]; exists && data != nil {
+			status += " │ " + shared.ConductorPassedBadge.Render(fmt.Sprintf("%d/%d", data.Passed, data.Total))
+			if data.Session != nil {
+				status += " " + shared.CommitDetailDateStyle.Render(fmt.Sprintf("#%d", data.Session.Number))
+			}
+			if len(data.Quality) > 0 {
+				status += " " + shared.ConductorQualityBadge.Render(fmt.Sprintf("\u26a0%d", len(data.Quality)))
+			}
+		}
+	}
+
 	status += " │ ? for help"
 
 	return "\n" + shared.StatusBarStyle.Width(a.width).Render(status)
@@ -819,6 +954,138 @@ func (a App) renderFatalOverlay(base string) string {
 
 	// Center the overlay
 	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, overlay)
+}
+
+func (a App) renderDashboardLayout(contentH int) string {
+	dashView := a.dashboard.View()
+
+	if a.showGraph && a.width > 80 {
+		// 3-column layout
+		dashPct := a.cfg.ResolvedDashboardWidth()
+		dashW := a.width * dashPct / 100
+		conductorW := a.width * 30 / 100
+		dashView = lipgloss.NewStyle().Width(dashW).Height(contentH).MaxHeight(contentH).Render(dashView)
+
+		var graphView string
+		if a.focusPanel == FocusGraph {
+			graphView = a.graphPane.ViewFocused()
+		} else {
+			graphView = a.graphPane.View()
+		}
+
+		var condView string
+		if a.focusPanel == FocusConductor {
+			condView = a.conductorPane.ViewFocused()
+		} else {
+			condView = a.conductorPane.View()
+		}
+		_ = conductorW // used in layoutSizes
+
+		return lipgloss.JoinHorizontal(lipgloss.Top, dashView, graphView, condView)
+	}
+
+	if a.showGraph && a.width > 40 {
+		// 2-column fallback
+		dashW := a.width - a.width/2
+		dashView = lipgloss.NewStyle().Width(dashW).Height(contentH).MaxHeight(contentH).Render(dashView)
+
+		var graphView string
+		if a.focusPanel == FocusGraph {
+			graphView = a.graphPane.ViewFocused()
+		} else {
+			graphView = a.graphPane.View()
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, dashView, graphView)
+	}
+
+	return dashView
+}
+
+func (a *App) maybeRefreshConductor() tea.Cmd {
+	if !a.showGraph {
+		return nil
+	}
+	repo, ok := a.dashboard.SelectedRepo()
+	if !ok {
+		return nil
+	}
+	if repo.Path == a.conductorRepo {
+		return nil
+	}
+	a.conductorRepo = repo.Path
+	return fetchConductorCmd(repo.Path)
+}
+
+func fetchConductorCmd(repoPath string) tea.Cmd {
+	return func() tea.Msg {
+		db, err := conductor.Open(repoPath)
+		if err != nil {
+			return shared.ConductorRefreshedMsg{RepoPath: repoPath, Err: err}
+		}
+		if db == nil {
+			return shared.ConductorRefreshedMsg{RepoPath: repoPath}
+		}
+		data, err := db.GetAllData()
+		if err != nil {
+			return shared.ConductorRefreshedMsg{RepoPath: repoPath, Err: err}
+		}
+		return conductorDataMsg{RepoPath: repoPath, Data: data}
+	}
+}
+
+type conductorDataMsg struct {
+	RepoPath string
+	Data     *conductor.ConductorData
+}
+
+func refreshConductorCmd(repoPath string) tea.Cmd {
+	return func() tea.Msg {
+		db, err := conductor.Open(repoPath)
+		if err != nil || db == nil {
+			return conductorDataMsg{RepoPath: repoPath}
+		}
+		data, _ := db.GetAllData()
+		return conductorDataMsg{RepoPath: repoPath, Data: data}
+	}
+}
+
+func matchFeaturesCmd(repoPath, commitHash, commitMsg string, changedFiles []string) tea.Cmd {
+	return func() tea.Msg {
+		db, err := conductor.Open(repoPath)
+		if err != nil || db == nil {
+			return featureMatchMsg{}
+		}
+		matches, _ := db.MatchFeature(commitMsg, changedFiles)
+		return featureMatchMsg{
+			RepoPath:   repoPath,
+			Matches:    matches,
+			CommitHash: commitHash,
+			CommitMsg:  commitMsg,
+		}
+	}
+}
+
+type featureMatchMsg struct {
+	RepoPath   string
+	Matches    []conductor.FeatureMatch
+	CommitHash string
+	CommitMsg  string
+}
+
+func linkFeatureCmd(repoPath, featureID, commitHash, commitMsg string, files []string) tea.Cmd {
+	return func() tea.Msg {
+		db, err := conductor.Open(repoPath)
+		if err != nil || db == nil {
+			return shared.FeatureLinkedMsg{Err: fmt.Errorf("no conductor db")}
+		}
+		err = db.RecordCommit(featureID, commitHash, commitMsg, files)
+		return shared.FeatureLinkedMsg{
+			FeatureID:   featureID,
+			CommitHash:  commitHash,
+			Description: commitMsg,
+			Err:         err,
+		}
+	}
 }
 
 // --- Commands ---

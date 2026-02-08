@@ -80,6 +80,7 @@ type DisplayConfig struct {
 	Priority        []PriorityRule `toml:"priority"`
 	GraphMaxCommits int            `toml:"graph_max_commits"`
 	ShowGraph       *bool          `toml:"show_graph"`
+	DashboardWidth  int            `toml:"dashboard_width"` // percentage, default 25 (with conductor) or 50 (without)
 }
 
 type PriorityRule struct {
@@ -331,6 +332,14 @@ func (c Config) ResolvedShowGraph() bool {
 		return *c.Display.ShowGraph
 	}
 	return true
+}
+
+// ResolvedDashboardWidth returns the configured dashboard width percentage or 25 as default.
+func (c Config) ResolvedDashboardWidth() int {
+	if c.Display.DashboardWidth > 0 && c.Display.DashboardWidth < 80 {
+		return c.Display.DashboardWidth
+	}
+	return 25
 }
 
 func pick(a, b string) string {

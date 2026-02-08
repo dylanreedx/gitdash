@@ -104,6 +104,17 @@ var (
 	// Indicators
 	StagedIndicator   string
 	UnstagedIndicator string
+
+	// Conductor pane
+	ConductorBorderStyle        lipgloss.Style
+	ConductorBorderFocusedStyle lipgloss.Style
+
+	// Conductor status badges
+	ConductorPassedBadge      lipgloss.Style
+	ConductorActiveBadge      lipgloss.Style
+	ConductorQualityBadge     lipgloss.Style
+	ConductorWarningHeaderStyle lipgloss.Style
+	ConductorWarningTextStyle   lipgloss.Style
 )
 
 // InitStyles configures all styles from a resolved theme.
@@ -326,6 +337,37 @@ func InitStyles(theme config.ThemeConfig, graphColors ...[]string) {
 
 	StagedIndicator = StagedFileStyle.Render("✓")
 	UnstagedIndicator = UnstagedFileStyle.Render("○")
+
+	// Conductor pane — reuse graph border pattern
+	ConductorBorderStyle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(theme.Muted))
+
+	ConductorBorderFocusedStyle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(theme.Accent))
+
+	ConductorPassedBadge = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Staged)).
+		Background(lipgloss.Color(theme.StatAddBG)).
+		Padding(0, 1)
+
+	ConductorActiveBadge = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Unstaged)).
+		Background(lipgloss.Color(theme.StatDelBG)).
+		Padding(0, 1)
+
+	ConductorQualityBadge = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.FeedbackWarningFG)).
+		Background(lipgloss.Color(theme.FeedbackWarningBG)).
+		Padding(0, 1)
+
+	// Conductor warning styles — FG only for list items (no background/padding bloat)
+	ConductorWarningHeaderStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.FeedbackWarningFG))
+
+	ConductorWarningTextStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.FeedbackWarningFG))
 }
 
 // RenderPath renders a file path with dim directories and bright filename.

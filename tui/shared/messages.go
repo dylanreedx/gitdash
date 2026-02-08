@@ -77,3 +77,17 @@ type ContextSummaryCopiedMsg struct {
 	NumRepos   int
 	Err        error
 }
+
+// Conductor messages
+
+type ConductorRefreshedMsg struct {
+	RepoPath string
+	Err      error
+}
+
+type FeatureLinkedMsg struct {
+	FeatureID   string
+	CommitHash  string
+	Description string
+	Err         error
+}
