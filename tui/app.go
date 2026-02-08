@@ -129,10 +129,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.PushCompleteMsg:
 		if msg.Err != nil {
 			a.statusMsg = "Push failed: " + msg.Err.Error()
-		} else {
-			a.statusMsg = "Pushed " + msg.Branch + " to origin"
+			return a, nil
 		}
-		return a, nil
+		a.statusMsg = "Pushed " + msg.Branch + " to origin"
+		return a, refreshAllStatus(a.cfg)
 
 	case shared.ContextSummaryCopiedMsg:
 		if msg.Err != nil {
