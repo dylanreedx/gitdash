@@ -2,6 +2,7 @@ package git
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -54,6 +55,8 @@ type RepoStatus struct {
 	Name   string
 	Branch string
 	Files  []FileEntry
+	Ahead  int
+	Behind int
 	Error  error
 }
 
@@ -137,6 +140,10 @@ func GetRepoStatus(repoPath, name string, ignorePatterns []string) RepoStatus {
 	}
 	rs.Branch = branch
 
+	ahead, behind := getAheadBehind(repoPath)
+	rs.Ahead = ahead
+	rs.Behind = behind
+
 	files, err := GetStatus(repoPath, ignorePatterns)
 	if err != nil {
 		rs.Error = err
@@ -162,6 +169,20 @@ func parseStatusChar(c byte) FileStatus {
 	default:
 		return StatusModified
 	}
+}
+
+func getAheadBehind(repoPath string) (ahead, behind int) {
+	out, err := RunGit(repoPath, "rev-list", "--count", "--left-right", "@{upstream}...HEAD")
+	if err != nil {
+		return 0, 0 // no upstream tracked
+	}
+	parts := strings.Fields(out)
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	behind, _ = strconv.Atoi(parts[0])
+	ahead, _ = strconv.Atoi(parts[1])
+	return ahead, behind
 }
 
 func shouldIgnore(path string, patterns []string) bool {

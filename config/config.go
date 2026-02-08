@@ -41,6 +41,10 @@ type ThemeConfig struct {
 	StatAddBG          string            `toml:"stat_add_bg"`
 	StatDelBG          string            `toml:"stat_del_bg"`
 	CommitDetailLabelFG string           `toml:"commit_detail_label_fg"`
+	SyncPushFG          string            `toml:"sync_push_fg"`
+	SyncPushBG          string            `toml:"sync_push_bg"`
+	SyncPullFG          string            `toml:"sync_pull_fg"`
+	SyncPullBG          string            `toml:"sync_pull_bg"`
 	FolderColors       map[string]string `toml:"folder_colors"`
 	PrefixColors       map[string]PrefixColor `toml:"prefix_colors"`
 }
@@ -194,6 +198,10 @@ func DefaultTheme() ThemeConfig {
 		StatAddBG:          "#1a3a2a",
 		StatDelBG:          "#3a1a1a",
 		CommitDetailLabelFG: "#606060",
+		SyncPushFG:          "#99ffe4",
+		SyncPushBG:          "#1a2520",
+		SyncPullFG:          "#ffc799",
+		SyncPullBG:          "#1a1a28",
 	}
 }
 
@@ -251,6 +259,10 @@ func (c Config) ResolvedTheme() ThemeConfig {
 		StatAddBG:          pick(c.Theme.StatAddBG, d.StatAddBG),
 		StatDelBG:          pick(c.Theme.StatDelBG, d.StatDelBG),
 		CommitDetailLabelFG: pick(c.Theme.CommitDetailLabelFG, d.CommitDetailLabelFG),
+		SyncPushFG:          pick(c.Theme.SyncPushFG, d.SyncPushFG),
+		SyncPushBG:          pick(c.Theme.SyncPushBG, d.SyncPushBG),
+		SyncPullFG:          pick(c.Theme.SyncPullFG, d.SyncPullFG),
+		SyncPullBG:          pick(c.Theme.SyncPullBG, d.SyncPullBG),
 	}
 
 	// Merge folder colors: defaults first, then config overrides per-key

@@ -474,23 +474,47 @@ func (m Model) renderRepoHeader(item FlatItem) string {
 		return fmt.Sprintf("  %s %s%s", chevron, name, errStr)
 	}
 
+	// Build sync badge
+	var syncBadge string
+	if repo.Ahead > 0 && repo.Behind > 0 {
+		syncBadge = shared.SyncPushBadge.Render(fmt.Sprintf("↑ %d to push", repo.Ahead)) +
+			" " + shared.SyncPullBadge.Render(fmt.Sprintf("↓ %d to pull", repo.Behind))
+	} else if repo.Ahead > 0 {
+		syncBadge = shared.SyncPushBadge.Render(fmt.Sprintf("↑ %d to push", repo.Ahead))
+	} else if repo.Behind > 0 {
+		syncBadge = shared.SyncPullBadge.Render(fmt.Sprintf("↓ %d to pull", repo.Behind))
+	}
+
 	fileCount := len(repo.Files)
+	var left string
 	if fileCount == 0 {
-		return fmt.Sprintf("  %s %s [%s] — clean", chevron, name, branch)
-	}
-
-	// Count staged vs unstaged
-	var stagedCount, unstagedCount int
-	for _, f := range repo.Files {
-		if f.StagingState == git.Staged {
-			stagedCount++
-		} else {
-			unstagedCount++
+		left = fmt.Sprintf("  %s %s [%s] — clean", chevron, name, branch)
+	} else {
+		// Count staged vs unstaged
+		var stagedCount, unstagedCount int
+		for _, f := range repo.Files {
+			if f.StagingState == git.Staged {
+				stagedCount++
+			} else {
+				unstagedCount++
+			}
 		}
+		summary := shared.HelpDescStyle.Render(fmt.Sprintf("%d staged, %d unstaged", stagedCount, unstagedCount))
+		left = fmt.Sprintf("  %s %s [%s] %s", chevron, name, branch, summary)
 	}
 
-	summary := shared.HelpDescStyle.Render(fmt.Sprintf("%d staged, %d unstaged", stagedCount, unstagedCount))
-	return fmt.Sprintf("  %s %s [%s] %s", chevron, name, branch, summary)
+	if syncBadge == "" || m.width < 20 {
+		return left
+	}
+
+	// Right-align the sync badge
+	leftW := lipgloss.Width(left)
+	badgeW := lipgloss.Width(syncBadge)
+	gap := m.width - leftW - badgeW - 1
+	if gap < 1 {
+		return left + " " + syncBadge
+	}
+	return left + strings.Repeat(" ", gap) + syncBadge
 }
 
 func (m Model) renderSectionHeader(item FlatItem) string {

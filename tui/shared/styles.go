@@ -88,6 +88,10 @@ var (
 	StatDelBadge           lipgloss.Style
 	FolderColorStyles      map[string]lipgloss.Style
 
+	// Sync status badges
+	SyncPushBadge lipgloss.Style
+	SyncPullBadge lipgloss.Style
+
 	// Indicators
 	StagedIndicator   string
 	UnstagedIndicator string
@@ -282,6 +286,16 @@ func InitStyles(theme config.ThemeConfig, graphColors ...[]string) {
 			Foreground(lipgloss.Color(hex)).
 			Bold(true)
 	}
+
+	SyncPushBadge = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.SyncPushFG)).
+		Background(lipgloss.Color(theme.SyncPushBG)).
+		Padding(0, 1)
+
+	SyncPullBadge = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.SyncPullFG)).
+		Background(lipgloss.Color(theme.SyncPullBG)).
+		Padding(0, 1)
 
 	StagedIndicator = StagedFileStyle.Render("✓")
 	UnstagedIndicator = UnstagedFileStyle.Render("○")
