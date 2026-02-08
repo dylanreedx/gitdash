@@ -15,6 +15,7 @@ type Model struct {
 	repo       *git.RepoStatus
 	err        error
 	generating bool
+	amend      bool
 	width      int
 	height     int
 }
@@ -41,6 +42,7 @@ func (m *Model) SetSize(w, h int) {
 func (m *Model) SetRepo(repo *git.RepoStatus) {
 	m.repo = repo
 	m.err = nil
+	m.amend = false
 	m.textInput.Reset()
 	m.textInput.Focus()
 }
@@ -58,6 +60,19 @@ func (m *Model) SetAIMessage(msg string) {
 	m.textInput.CursorEnd()
 }
 
+func (m *Model) ToggleAmend() {
+	m.amend = !m.amend
+}
+
+func (m *Model) SetAmendMessage(msg string) {
+	m.textInput.SetValue(msg)
+	m.textInput.CursorEnd()
+}
+
+func (m Model) IsAmend() bool {
+	return m.amend
+}
+
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
@@ -73,7 +88,11 @@ func (m Model) View() string {
 
 	b.WriteString("\n")
 	if m.repo != nil {
-		header := shared.CommitHeaderStyle.Render(fmt.Sprintf("  Commit to: %s [%s]", m.repo.Name, m.repo.Branch))
+		action := "Commit to"
+		if m.amend {
+			action = "Amend on"
+		}
+		header := shared.CommitHeaderStyle.Render(fmt.Sprintf("  %s: %s [%s]", action, m.repo.Name, m.repo.Branch))
 		b.WriteString(header)
 		b.WriteString("\n\n")
 
@@ -100,7 +119,11 @@ func (m Model) View() string {
 		b.WriteString("\n\n")
 	}
 
-	b.WriteString(shared.HelpDescStyle.Render("  enter: commit  tab: AI generate  esc: cancel"))
+	amendHint := "C-a: amend"
+	if m.amend {
+		amendHint = "C-a: new commit"
+	}
+	b.WriteString(shared.HelpDescStyle.Render(fmt.Sprintf("  enter: commit  tab: AI generate  %s  esc: cancel", amendHint)))
 
 	return b.String()
 }

@@ -24,6 +24,7 @@ type KeyMap struct {
 	FocusLeft      key.Binding
 	FocusRight     key.Binding
 	Push           key.Binding
+	AmendToggle    key.Binding
 	GenerateMsg    key.Binding
 	ContextSummary key.Binding
 }
@@ -112,6 +113,10 @@ var Keys = KeyMap{
 	Push: key.NewBinding(
 		key.WithKeys("p"),
 		key.WithHelp("p", "push"),
+	),
+	AmendToggle: key.NewBinding(
+		key.WithKeys("ctrl+a"),
+		key.WithHelp("C-a", "amend"),
 	),
 	GenerateMsg: key.NewBinding(
 		key.WithKeys("tab"),

@@ -459,6 +459,21 @@ func (a App) handleCommitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, shared.Keys.Escape):
 		return a, func() tea.Msg { return shared.CloseCommitMsg{} }
 
+	case key.Matches(msg, shared.Keys.AmendToggle):
+		repo, ok := a.dashboard.SelectedRepo()
+		if !ok {
+			return a, nil
+		}
+		a.commitView.ToggleAmend()
+		if a.commitView.IsAmend() {
+			// Pre-fill with last commit message
+			lastMsg, err := git.LastCommitMessage(repo.Path)
+			if err == nil {
+				a.commitView.SetAmendMessage(lastMsg)
+			}
+		}
+		return a, nil
+
 	case key.Matches(msg, shared.Keys.GenerateMsg):
 		repo, ok := a.dashboard.SelectedRepo()
 		if !ok {
@@ -475,6 +490,9 @@ func (a App) handleCommitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		repo, ok := a.dashboard.SelectedRepo()
 		if !ok {
 			return a, nil
+		}
+		if a.commitView.IsAmend() {
+			return a, amendCmd(repo.Path, message)
 		}
 		return a, commitCmd(repo.Path, message)
 	}
@@ -697,6 +715,13 @@ func fetchCommitDetailCmd(repoPath, hash string) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := git.GetCommitDetail(repoPath, hash)
 		return shared.CommitDetailFetchedMsg{Detail: detail, RepoPath: repoPath, Hash: hash, Err: err}
+	}
+}
+
+func amendCmd(repoPath, message string) tea.Cmd {
+	return func() tea.Msg {
+		err := git.CommitAmend(repoPath, message)
+		return shared.CommitCompleteMsg{Err: err}
 	}
 }
 
