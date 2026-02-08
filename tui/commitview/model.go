@@ -11,13 +11,14 @@ import (
 )
 
 type Model struct {
-	textInput  textinput.Model
-	repo       *git.RepoStatus
-	err        error
-	generating bool
-	amend      bool
-	width      int
-	height     int
+	textInput   textinput.Model
+	repo        *git.RepoStatus
+	err         error
+	generating  bool
+	amend       bool
+	spinnerView string
+	width       int
+	height      int
 }
 
 func New() Model {
@@ -53,6 +54,14 @@ func (m *Model) SetError(err error) {
 
 func (m *Model) SetGenerating(v bool) {
 	m.generating = v
+	if !v {
+		m.spinnerView = ""
+	}
+}
+
+// SetSpinnerView sets the rendered spinner string for AI generation animation.
+func (m *Model) SetSpinnerView(view string) {
+	m.spinnerView = view
 }
 
 func (m *Model) SetAIMessage(msg string) {
@@ -107,7 +116,11 @@ func (m Model) View() string {
 	}
 
 	if m.generating {
-		b.WriteString("  " + shared.HelpDescStyle.Render("Generating commit message..."))
+		spinLabel := "Generating commit message..."
+		if m.spinnerView != "" {
+			spinLabel = m.spinnerView + " " + spinLabel
+		}
+		b.WriteString("  " + shared.HelpDescStyle.Render(spinLabel))
 		b.WriteString("\n\n")
 	} else {
 		b.WriteString("  " + m.textInput.View())

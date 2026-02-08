@@ -41,6 +41,7 @@ type Model struct {
 	collapsed        map[int]bool
 	docsCollapsed    map[int]bool
 	foldersCollapsed map[string]bool // "repoIndex:dir" -> collapsed
+	pushingRepos     map[int]string  // repoIndex -> spinner view string
 	priorityRules    []config.PriorityRule
 	display          config.DisplayConfig
 	cursor           int
@@ -53,9 +54,25 @@ func New(rules []config.PriorityRule, display config.DisplayConfig) Model {
 		collapsed:        make(map[int]bool),
 		docsCollapsed:    make(map[int]bool),
 		foldersCollapsed: make(map[string]bool),
+		pushingRepos:     make(map[int]string),
 		priorityRules:    rules,
 		display:          display,
 	}
+}
+
+// SetRepoPushing sets or clears the spinner view for a repo header.
+// Pass empty string to clear.
+func (m *Model) SetRepoPushing(repoIndex int, spinnerView string) {
+	if spinnerView == "" {
+		delete(m.pushingRepos, repoIndex)
+	} else {
+		m.pushingRepos[repoIndex] = spinnerView
+	}
+}
+
+// ClearRepoPushing removes the pushing spinner for a repo.
+func (m *Model) ClearRepoPushing(repoIndex int) {
+	delete(m.pushingRepos, repoIndex)
 }
 
 func (m *Model) SetSize(w, h int) {
@@ -474,9 +491,11 @@ func (m Model) renderRepoHeader(item FlatItem) string {
 		return fmt.Sprintf("  %s %s%s", chevron, name, errStr)
 	}
 
-	// Build sync badge
+	// Build sync badge (or show pushing spinner)
 	var syncBadge string
-	if repo.Ahead > 0 && repo.Behind > 0 {
+	if spinView, pushing := m.pushingRepos[item.RepoIndex]; pushing {
+		syncBadge = shared.SyncPushBadge.Render(spinView + " pushing")
+	} else if repo.Ahead > 0 && repo.Behind > 0 {
 		syncBadge = shared.SyncPushBadge.Render(fmt.Sprintf("↑ %d to push", repo.Ahead)) +
 			" " + shared.SyncPullBadge.Render(fmt.Sprintf("↓ %d to pull", repo.Behind))
 	} else if repo.Ahead > 0 {

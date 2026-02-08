@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dylan/gitdash/config"
 )
@@ -91,6 +92,14 @@ var (
 	// Sync status badges
 	SyncPushBadge lipgloss.Style
 	SyncPullBadge lipgloss.Style
+
+	// Spinner
+	SpinnerStyle lipgloss.Style
+
+	// Feedback
+	FeedbackSuccessStyle lipgloss.Style
+	FeedbackWarningStyle lipgloss.Style
+	FeedbackErrorStyle   lipgloss.Style
 
 	// Indicators
 	StagedIndicator   string
@@ -297,6 +306,24 @@ func InitStyles(theme config.ThemeConfig, graphColors ...[]string) {
 		Background(lipgloss.Color(theme.SyncPullBG)).
 		Padding(0, 1)
 
+	SpinnerStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.SpinnerFG))
+
+	FeedbackSuccessStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.FeedbackSuccessFG)).
+		Background(lipgloss.Color(theme.FeedbackSuccessBG)).
+		Padding(0, 1)
+
+	FeedbackWarningStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.FeedbackWarningFG)).
+		Background(lipgloss.Color(theme.FeedbackWarningBG)).
+		Padding(0, 1)
+
+	FeedbackErrorStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.FeedbackErrorFG)).
+		Background(lipgloss.Color(theme.FeedbackErrorBG)).
+		Padding(0, 1)
+
 	StagedIndicator = StagedFileStyle.Render("✓")
 	UnstagedIndicator = UnstagedFileStyle.Render("○")
 }
@@ -329,6 +356,28 @@ func FolderStyle(dirName string) lipgloss.Style {
 		return s
 	}
 	return FolderDimStyle
+}
+
+// ResolveSpinnerType maps a config string to a bubbles spinner type.
+func ResolveSpinnerType(name string) spinner.Spinner {
+	switch strings.ToLower(name) {
+	case "dot":
+		return spinner.Dot
+	case "line":
+		return spinner.Line
+	case "minidot":
+		return spinner.MiniDot
+	case "pulse":
+		return spinner.Pulse
+	case "points":
+		return spinner.Points
+	case "meter":
+		return spinner.Meter
+	case "ellipsis":
+		return spinner.Ellipsis
+	default:
+		return spinner.MiniDot
+	}
 }
 
 func init() {

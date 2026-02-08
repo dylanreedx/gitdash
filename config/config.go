@@ -45,6 +45,14 @@ type ThemeConfig struct {
 	SyncPushBG          string            `toml:"sync_push_bg"`
 	SyncPullFG          string            `toml:"sync_pull_fg"`
 	SyncPullBG          string            `toml:"sync_pull_bg"`
+	SpinnerFG           string            `toml:"spinner_fg"`
+	SpinnerType         string            `toml:"spinner_type"`
+	FeedbackSuccessFG   string            `toml:"feedback_success_fg"`
+	FeedbackSuccessBG   string            `toml:"feedback_success_bg"`
+	FeedbackWarningFG   string            `toml:"feedback_warning_fg"`
+	FeedbackWarningBG   string            `toml:"feedback_warning_bg"`
+	FeedbackErrorFG     string            `toml:"feedback_error_fg"`
+	FeedbackErrorBG     string            `toml:"feedback_error_bg"`
 	FolderColors       map[string]string `toml:"folder_colors"`
 	PrefixColors       map[string]PrefixColor `toml:"prefix_colors"`
 }
@@ -202,6 +210,14 @@ func DefaultTheme() ThemeConfig {
 		SyncPushBG:          "#1a2520",
 		SyncPullFG:          "#ffc799",
 		SyncPullBG:          "#1a1a28",
+		SpinnerFG:           "#ffc799",
+		SpinnerType:         "minidot",
+		FeedbackSuccessFG:   "#99ffe4",
+		FeedbackSuccessBG:   "#1a3a2a",
+		FeedbackWarningFG:   "#ffc799",
+		FeedbackWarningBG:   "#2a2215",
+		FeedbackErrorFG:     "#ff8080",
+		FeedbackErrorBG:     "#3a1a1a",
 	}
 }
 
@@ -263,6 +279,14 @@ func (c Config) ResolvedTheme() ThemeConfig {
 		SyncPushBG:          pick(c.Theme.SyncPushBG, d.SyncPushBG),
 		SyncPullFG:          pick(c.Theme.SyncPullFG, d.SyncPullFG),
 		SyncPullBG:          pick(c.Theme.SyncPullBG, d.SyncPullBG),
+		SpinnerFG:           pick(c.Theme.SpinnerFG, d.SpinnerFG),
+		SpinnerType:         pick(c.Theme.SpinnerType, d.SpinnerType),
+		FeedbackSuccessFG:   pick(c.Theme.FeedbackSuccessFG, d.FeedbackSuccessFG),
+		FeedbackSuccessBG:   pick(c.Theme.FeedbackSuccessBG, d.FeedbackSuccessBG),
+		FeedbackWarningFG:   pick(c.Theme.FeedbackWarningFG, d.FeedbackWarningFG),
+		FeedbackWarningBG:   pick(c.Theme.FeedbackWarningBG, d.FeedbackWarningBG),
+		FeedbackErrorFG:     pick(c.Theme.FeedbackErrorFG, d.FeedbackErrorFG),
+		FeedbackErrorBG:     pick(c.Theme.FeedbackErrorBG, d.FeedbackErrorBG),
 	}
 
 	// Merge folder colors: defaults first, then config overrides per-key

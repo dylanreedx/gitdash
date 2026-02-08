@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dylan/gitdash/ai"
@@ -55,6 +56,14 @@ type App struct {
 	graphRepo       string // repo path of last graph fetch
 	lastDetailHash  string // hash of last fetched commit detail
 
+	// Animated loaders
+	spinners      map[shared.LoaderOp]spinner.Model
+	spinnerLabels map[shared.LoaderOp]string
+	pushingRepoIdx int // repo index being pushed (-1 = none)
+
+	// Feedback system
+	feedback *shared.Feedback
+
 	width  int
 	height int
 }
@@ -67,21 +76,54 @@ func NewApp(cfg config.Config) App {
 	gp.SetShowIcons(cfg.Display.Icons || cfg.Display.NerdFonts)
 
 	return App{
-		cfg:          cfg,
-		activeView:   DashboardView,
-		dashboard:    dashboard.New(cfg.ResolvedPriorityRules(), cfg.Display),
-		diffView:     diffview.New(),
-		commitView:   commitview.New(),
-		helpView:     help.New(),
-		graphPane:    gp,
-		branchPicker: branchpicker.New(),
-		showGraph:    cfg.ResolvedShowGraph(),
+		cfg:            cfg,
+		activeView:     DashboardView,
+		dashboard:      dashboard.New(cfg.ResolvedPriorityRules(), cfg.Display),
+		diffView:       diffview.New(),
+		commitView:     commitview.New(),
+		helpView:       help.New(),
+		graphPane:      gp,
+		branchPicker:   branchpicker.New(),
+		showGraph:      cfg.ResolvedShowGraph(),
+		spinners:       make(map[shared.LoaderOp]spinner.Model),
+		spinnerLabels:  make(map[shared.LoaderOp]string),
+		pushingRepoIdx: -1,
 	}
 }
 
 func (a *App) setStatus(msg string) {
 	a.statusMsg = msg
 	a.statusTime = time.Now()
+}
+
+func (a *App) newSpinner() spinner.Model {
+	theme := a.cfg.ResolvedTheme()
+	s := spinner.New()
+	s.Spinner = shared.ResolveSpinnerType(theme.SpinnerType)
+	s.Style = shared.SpinnerStyle
+	return s
+}
+
+func (a *App) startLoader(op shared.LoaderOp, label string) tea.Cmd {
+	s := a.newSpinner()
+	a.spinners[op] = s
+	a.spinnerLabels[op] = label
+	return s.Tick
+}
+
+func (a *App) stopLoader(op shared.LoaderOp) {
+	delete(a.spinners, op)
+	delete(a.spinnerLabels, op)
+}
+
+func (a *App) setFeedback(level shared.FeedbackLevel, message string, detail string, op shared.LoaderOp) {
+	a.feedback = &shared.Feedback{
+		Level:     level,
+		Message:   message,
+		Detail:    detail,
+		Timestamp: time.Now(),
+		Op:        op,
+	}
 }
 
 func (a App) Init() tea.Cmd {
@@ -106,11 +148,60 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.branchPicker.SetSize(msg.Width, msg.Height)
 		return a, nil
 
+	case shared.LoaderStartMsg:
+		cmd := a.startLoader(msg.Op, msg.Label)
+		return a, cmd
+
+	case shared.LoaderStopMsg:
+		a.stopLoader(msg.Op)
+		if msg.Op == shared.OpPush && a.pushingRepoIdx >= 0 {
+			a.dashboard.ClearRepoPushing(a.pushingRepoIdx)
+			a.pushingRepoIdx = -1
+		}
+		return a, nil
+
+	case shared.FeedbackMsg:
+		a.feedback = &msg.Feedback
+		if a.feedback.Timestamp.IsZero() {
+			a.feedback.Timestamp = time.Now()
+		}
+		return a, nil
+
+	case shared.DismissFeedbackMsg:
+		a.feedback = nil
+		return a, nil
+
+	case spinner.TickMsg:
+		var cmds []tea.Cmd
+		for op, s := range a.spinners {
+			var cmd tea.Cmd
+			s, cmd = s.Update(msg)
+			a.spinners[op] = s
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		// Pass updated spinner views to child components
+		if s, ok := a.spinners[shared.OpPush]; ok && a.pushingRepoIdx >= 0 {
+			a.dashboard.SetRepoPushing(a.pushingRepoIdx, s.View())
+		}
+		if s, ok := a.spinners[shared.OpGenerate]; ok {
+			a.commitView.SetSpinnerView(s.View())
+		}
+		return a, tea.Batch(cmds...)
+
 	case shared.StatusRefreshedMsg:
 		a.dashboard.SetRepos(msg.Repos)
-		// Clear status messages after 4 seconds
+		// Auto-clear legacy status messages after 4s
 		if a.statusMsg != "" && time.Since(a.statusTime) > 4*time.Second {
 			a.statusMsg = ""
+		}
+		// Auto-clear feedback based on TTL per level
+		if a.feedback != nil && a.feedback.Level != shared.FeedbackFatal {
+			ttl := shared.FeedbackTTL(a.feedback.Level)
+			if ttl > 0 && time.Since(a.feedback.Timestamp) > ttl {
+				a.feedback = nil
+			}
 		}
 		return a, a.maybeRefreshGraph()
 
@@ -134,10 +225,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.activeView = DashboardView
-		a.setStatus("Committed successfully")
+		a.setFeedback(shared.FeedbackSuccess, "Committed successfully", "", "")
 		return a, refreshAllStatus(a.cfg)
 
 	case shared.AICommitMsgMsg:
+		a.stopLoader(shared.OpGenerate)
 		a.commitView.SetGenerating(false)
 		if msg.Err != nil {
 			a.commitView.SetError(msg.Err)
@@ -147,18 +239,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case shared.PushCompleteMsg:
+		a.stopLoader(shared.OpPush)
+		if a.pushingRepoIdx >= 0 {
+			a.dashboard.ClearRepoPushing(a.pushingRepoIdx)
+			a.pushingRepoIdx = -1
+		}
 		if msg.Err != nil {
-			a.setStatus("Push failed: " + msg.Err.Error())
+			a.setFeedback(shared.FeedbackError, "Push failed: "+msg.Err.Error(), msg.Err.Error(), shared.OpPush)
 			return a, nil
 		}
-		a.setStatus("Pushed " + msg.Branch + " to origin")
+		a.setFeedback(shared.FeedbackSuccess, "Pushed "+msg.Branch+" to origin", "", shared.OpPush)
 		return a, refreshAllStatus(a.cfg)
 
 	case shared.ContextSummaryCopiedMsg:
+		a.stopLoader(shared.OpExport)
 		if msg.Err != nil {
-			a.setStatus("Error: " + msg.Err.Error())
+			a.setFeedback(shared.FeedbackError, "Export failed: "+msg.Err.Error(), msg.Err.Error(), shared.OpExport)
 		} else {
-			a.setStatus(fmt.Sprintf("Context copied to clipboard (%d commits across %d repos)", msg.NumCommits, msg.NumRepos))
+			a.setFeedback(shared.FeedbackSuccess, fmt.Sprintf("Context copied to clipboard (%d commits across %d repos)", msg.NumCommits, msg.NumRepos), "", shared.OpExport)
 		}
 		return a, nil
 
@@ -226,6 +324,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case pollTickMsg:
+		// Auto-clear feedback based on TTL (runs on every poll, even outside dashboard)
+		if a.feedback != nil && a.feedback.Level != shared.FeedbackFatal {
+			ttl := shared.FeedbackTTL(a.feedback.Level)
+			if ttl > 0 && time.Since(a.feedback.Timestamp) > ttl {
+				a.feedback = nil
+			}
+		}
+		// Auto-clear legacy status messages
+		if a.statusMsg != "" && time.Since(a.statusTime) > 4*time.Second {
+			a.statusMsg = ""
+		}
 		// Only auto-refresh on the dashboard view to avoid disrupting other views
 		if a.activeView == DashboardView || a.activeView == BranchPickerView {
 			return a, tea.Batch(refreshAllStatus(a.cfg), pollTickCmd())
@@ -256,6 +365,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Fatal feedback overlay: any key dismisses
+	if a.feedback != nil && a.feedback.Level == shared.FeedbackFatal {
+		a.feedback = nil
+		return a, nil
+	}
+
 	// Help toggle is global
 	if key.Matches(msg, shared.Keys.Help) {
 		a.showHelp = !a.showHelp
@@ -335,16 +450,18 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case key.Matches(msg, shared.Keys.Push):
-		repo, ok := a.dashboard.SelectedRepo()
+		item, ok := a.dashboard.SelectedItem()
 		if !ok {
 			return a, nil
 		}
-		a.setStatus("Pushing " + repo.Branch + "...")
-		return a, pushCmd(repo.Path, repo.Branch)
+		repo := item.Repo
+		a.pushingRepoIdx = item.RepoIndex
+		spinCmd := a.startLoader(shared.OpPush, "Pushing "+repo.Branch+" to origin")
+		return a, tea.Batch(spinCmd, pushCmd(repo.Path, repo.Branch))
 
 	case key.Matches(msg, shared.Keys.ContextSummary):
-		a.setStatus("Exporting context...")
-		return a, exportContextCmd(a.cfg, 7)
+		spinCmd := a.startLoader(shared.OpExport, "Exporting context")
+		return a, tea.Batch(spinCmd, exportContextCmd(a.cfg, 7))
 
 	case key.Matches(msg, shared.Keys.Branch):
 		repo, ok := a.dashboard.SelectedRepo()
@@ -507,7 +624,8 @@ func (a App) handleCommitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.commitView.SetGenerating(true)
-		return a, generateCommitMsgCmd(repo.Path)
+		spinCmd := a.startLoader(shared.OpGenerate, "Generating commit message")
+		return a, tea.Batch(spinCmd, generateCommitMsgCmd(repo.Path))
 
 	case msg.Type == tea.KeyEnter:
 		message := a.commitView.Value()
@@ -554,6 +672,11 @@ func (a App) handleBranchPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) View() string {
 	if a.showHelp {
 		return a.helpView.View()
+	}
+
+	// Fatal overlay takes over the entire screen
+	if a.feedback != nil && a.feedback.Level == shared.FeedbackFatal {
+		return a.renderFatalOverlay("")
 	}
 
 	var view string
@@ -646,12 +769,56 @@ func (a App) renderStatusBar() string {
 	}
 
 	status := strings.Join(parts, " │ ")
-	if a.statusMsg != "" {
+
+	// Show active spinners in status bar
+	for op, s := range a.spinners {
+		label := a.spinnerLabels[op]
+		status += " │ " + s.View() + " " + label
+	}
+
+	// Show feedback or legacy status
+	if a.feedback != nil {
+		var styledMsg string
+		switch a.feedback.Level {
+		case shared.FeedbackSuccess:
+			styledMsg = shared.FeedbackSuccessStyle.Render(a.feedback.Message)
+		case shared.FeedbackWarning:
+			styledMsg = shared.FeedbackWarningStyle.Render(a.feedback.Message)
+		case shared.FeedbackError:
+			styledMsg = shared.FeedbackErrorStyle.Render(a.feedback.Message)
+		default:
+			styledMsg = a.feedback.Message
+		}
+		status += " │ " + styledMsg
+	} else if a.statusMsg != "" {
 		status += " │ " + a.statusMsg
 	}
+
 	status += " │ ? for help"
 
 	return "\n" + shared.StatusBarStyle.Width(a.width).Render(status)
+}
+
+func (a App) renderFatalOverlay(base string) string {
+	if a.feedback == nil || a.feedback.Level != shared.FeedbackFatal {
+		return base
+	}
+
+	content := shared.FeedbackErrorStyle.Render("ERROR: "+a.feedback.Message) + "\n"
+	if a.feedback.Detail != "" {
+		content += "\n" + a.feedback.Detail + "\n"
+	}
+	content += "\n" + shared.HelpDescStyle.Render("Press any key to dismiss")
+
+	overlay := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#ff8080")).
+		Padding(1, 2).
+		Width(a.width - 10).
+		Render(content)
+
+	// Center the overlay
+	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, overlay)
 }
 
 // --- Commands ---
