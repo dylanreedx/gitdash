@@ -126,6 +126,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case shared.PushCompleteMsg:
+		if msg.Err != nil {
+			a.statusMsg = "Push failed: " + msg.Err.Error()
+		} else {
+			a.statusMsg = "Pushed " + msg.Branch + " to origin"
+		}
+		return a, nil
+
 	case shared.ContextSummaryCopiedMsg:
 		if msg.Err != nil {
 			a.statusMsg = "Error: " + msg.Err.Error()
@@ -299,6 +307,14 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case key.Matches(msg, shared.Keys.Push):
+		repo, ok := a.dashboard.SelectedRepo()
+		if !ok {
+			return a, nil
+		}
+		a.statusMsg = "Pushing " + repo.Branch + "..."
+		return a, pushCmd(repo.Path, repo.Branch)
+
 	case key.Matches(msg, shared.Keys.ContextSummary):
 		a.statusMsg = "Exporting context..."
 		return a, exportContextCmd(a.cfg, 7)
@@ -328,14 +344,26 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, shared.Keys.Stage):
 		item, ok := a.dashboard.SelectedItem()
-		if !ok || item.Kind != dashboard.File {
+		if !ok {
+			return a, nil
+		}
+		if item.Kind == dashboard.RepoHeader {
+			return a, stageAllCmd(item.Repo.Path)
+		}
+		if item.Kind != dashboard.File {
 			return a, nil
 		}
 		return a, stageFileCmd(item.Repo.Path, item.File.Path)
 
 	case key.Matches(msg, shared.Keys.Unstage):
 		item, ok := a.dashboard.SelectedItem()
-		if !ok || item.Kind != dashboard.File {
+		if !ok {
+			return a, nil
+		}
+		if item.Kind == dashboard.RepoHeader {
+			return a, unstageAllCmd(item.Repo.Path)
+		}
+		if item.Kind != dashboard.File {
 			return a, nil
 		}
 		return a, unstageFileCmd(item.Repo.Path, item.File.Path)
@@ -669,6 +697,13 @@ func fetchCommitDetailCmd(repoPath, hash string) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := git.GetCommitDetail(repoPath, hash)
 		return shared.CommitDetailFetchedMsg{Detail: detail, RepoPath: repoPath, Hash: hash, Err: err}
+	}
+}
+
+func pushCmd(repoPath, branch string) tea.Cmd {
+	return func() tea.Msg {
+		err := git.Push(repoPath, branch)
+		return shared.PushCompleteMsg{Branch: branch, Err: err}
 	}
 }
 

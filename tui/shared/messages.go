@@ -66,6 +66,11 @@ type AICommitMsgMsg struct {
 	Err     error
 }
 
+type PushCompleteMsg struct {
+	Branch string
+	Err    error
+}
+
 type ContextSummaryCopiedMsg struct {
 	Summary    string
 	NumCommits int

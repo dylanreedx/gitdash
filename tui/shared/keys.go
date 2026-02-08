@@ -23,6 +23,7 @@ type KeyMap struct {
 	FocusUp        key.Binding
 	FocusLeft      key.Binding
 	FocusRight     key.Binding
+	Push           key.Binding
 	GenerateMsg    key.Binding
 	ContextSummary key.Binding
 }
@@ -108,6 +109,10 @@ var Keys = KeyMap{
 		key.WithKeys("ctrl+l"),
 		key.WithHelp("C-l", "focus right"),
 	),
+	Push: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "push"),
+	),
 	GenerateMsg: key.NewBinding(
 		key.WithKeys("tab"),
 		key.WithHelp("tab", "AI generate"),
@@ -127,7 +132,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.NextRepo, k.PrevRepo},
 		{k.FocusLeft, k.FocusRight, k.FocusDown, k.FocusUp},
 		{k.Stage, k.Unstage, k.StageAll, k.UnstageAll},
-		{k.Diff, k.Commit, k.Open, k.Branch},
+		{k.Diff, k.Commit, k.Push, k.Open, k.Branch},
 		{k.ToggleGraph, k.ContextSummary, k.Help, k.Quit, k.Escape},
 	}
 }
