@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +23,10 @@ import (
 	"github.com/dylan/gitdash/tui/shared"
 )
 
+const pollInterval = 2 * time.Second
+
+type pollTickMsg time.Time
+
 type ActiveView int
 
 const (
@@ -36,6 +41,7 @@ type App struct {
 	activeView ActiveView
 	showHelp   bool
 	statusMsg  string
+	statusTime time.Time
 
 	dashboard    dashboard.Model
 	diffView     diffview.Model
@@ -73,8 +79,19 @@ func NewApp(cfg config.Config) App {
 	}
 }
 
+func (a *App) setStatus(msg string) {
+	a.statusMsg = msg
+	a.statusTime = time.Now()
+}
+
 func (a App) Init() tea.Cmd {
-	return refreshAllStatus(a.cfg)
+	return tea.Batch(refreshAllStatus(a.cfg), pollTickCmd())
+}
+
+func pollTickCmd() tea.Cmd {
+	return tea.Tick(pollInterval, func(t time.Time) tea.Msg {
+		return pollTickMsg(t)
+	})
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -91,7 +108,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.StatusRefreshedMsg:
 		a.dashboard.SetRepos(msg.Repos)
-		a.statusMsg = ""
+		// Clear status messages after 4 seconds
+		if a.statusMsg != "" && time.Since(a.statusTime) > 4*time.Second {
+			a.statusMsg = ""
+		}
 		return a, a.maybeRefreshGraph()
 
 	case shared.FileStageToggledMsg, shared.AllStagedMsg, shared.AllUnstagedMsg:
@@ -99,7 +119,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.DiffFetchedMsg:
 		if msg.Err != nil {
-			a.statusMsg = "Error: " + msg.Err.Error()
+			a.setStatus("Error: " + msg.Err.Error())
 			return a, nil
 		}
 		a.activeView = DiffView
@@ -114,7 +134,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.activeView = DashboardView
-		a.statusMsg = "Committed successfully"
+		a.setStatus("Committed successfully")
 		return a, refreshAllStatus(a.cfg)
 
 	case shared.AICommitMsgMsg:
@@ -128,17 +148,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.PushCompleteMsg:
 		if msg.Err != nil {
-			a.statusMsg = "Push failed: " + msg.Err.Error()
+			a.setStatus("Push failed: " + msg.Err.Error())
 			return a, nil
 		}
-		a.statusMsg = "Pushed " + msg.Branch + " to origin"
+		a.setStatus("Pushed " + msg.Branch + " to origin")
 		return a, refreshAllStatus(a.cfg)
 
 	case shared.ContextSummaryCopiedMsg:
 		if msg.Err != nil {
-			a.statusMsg = "Error: " + msg.Err.Error()
+			a.setStatus("Error: " + msg.Err.Error())
 		} else {
-			a.statusMsg = fmt.Sprintf("Context copied to clipboard (%d commits across %d repos)", msg.NumCommits, msg.NumRepos)
+			a.setStatus(fmt.Sprintf("Context copied to clipboard (%d commits across %d repos)", msg.NumCommits, msg.NumRepos))
 		}
 		return a, nil
 
@@ -174,7 +194,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.BranchesFetchedMsg:
 		if msg.Err != nil {
-			a.statusMsg = "Error: " + msg.Err.Error()
+			a.setStatus("Error: " + msg.Err.Error())
 			return a, nil
 		}
 		a.branchPicker.SetBranches(msg.Branches, msg.RepoPath)
@@ -183,9 +203,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.BranchSwitchedMsg:
 		if msg.Err != nil {
-			a.statusMsg = "Error: " + msg.Err.Error()
+			a.setStatus("Error: " + msg.Err.Error())
 		} else {
-			a.statusMsg = "Switched to " + msg.Branch
+			a.setStatus("Switched to " + msg.Branch)
 		}
 		a.activeView = DashboardView
 		a.graphRepo = "" // force graph refresh
@@ -193,9 +213,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.BranchCreatedMsg:
 		if msg.Err != nil {
-			a.statusMsg = "Error: " + msg.Err.Error()
+			a.setStatus("Error: " + msg.Err.Error())
 		} else {
-			a.statusMsg = "Created " + msg.Branch
+			a.setStatus("Created " + msg.Branch)
 		}
 		a.activeView = DashboardView
 		a.graphRepo = "" // force graph refresh
@@ -204,6 +224,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.CloseBranchPickerMsg:
 		a.activeView = DashboardView
 		return a, nil
+
+	case pollTickMsg:
+		// Only auto-refresh on the dashboard view to avoid disrupting other views
+		if a.activeView == DashboardView || a.activeView == BranchPickerView {
+			return a, tea.Batch(refreshAllStatus(a.cfg), pollTickCmd())
+		}
+		return a, pollTickCmd()
 
 	case tea.KeyMsg:
 		return a.handleKey(msg)
@@ -312,11 +339,11 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return a, nil
 		}
-		a.statusMsg = "Pushing " + repo.Branch + "..."
+		a.setStatus("Pushing " + repo.Branch + "...")
 		return a, pushCmd(repo.Path, repo.Branch)
 
 	case key.Matches(msg, shared.Keys.ContextSummary):
-		a.statusMsg = "Exporting context..."
+		a.setStatus("Exporting context...")
 		return a, exportContextCmd(a.cfg, 7)
 
 	case key.Matches(msg, shared.Keys.Branch):
@@ -395,7 +422,7 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		if !a.dashboard.RepoHasStagedFiles(item.RepoIndex) {
-			a.statusMsg = "No staged files to commit"
+			a.setStatus("No staged files to commit")
 			return a, nil
 		}
 		a.activeView = CommitView
