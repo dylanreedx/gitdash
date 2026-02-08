@@ -1,0 +1,19 @@
+[[workspace]]
+name = "dev"
+
+[[workspace.repo]]
+path = "../../work/selectus/selectus-ms"
+
+[[workspace.repo]]
+path = "../../work/selectus/selectus-ui"
+
+[[workspace.repo]]
+path = "../gitdash"
+
+[[workspace.repo]]
+path = "../bite"
+
+[display]
+icons = true
+group_docs = true
+group_folders = true
