@@ -66,6 +66,7 @@ type App struct {
 	featureLinker  featurelinker.Model
 
 	showGraph       bool
+	showConductor   bool
 	graphFocused    bool
 	focusPanel      FocusPanel
 	graphRepo       string // repo path of last graph fetch
@@ -94,10 +95,13 @@ func NewApp(cfg config.Config) App {
 	gp := graphpane.New()
 	gp.SetShowIcons(cfg.Display.Icons || cfg.Display.NerdFonts)
 
+	dash := dashboard.New(cfg.ResolvedPriorityRules(), cfg.Display)
+	dash.SetProjects(cfg.Projects)
+
 	return App{
 		cfg:            cfg,
 		activeView:     DashboardView,
-		dashboard:      dashboard.New(cfg.ResolvedPriorityRules(), cfg.Display),
+		dashboard:      dash,
 		diffView:       diffview.New(),
 		commitView:     commitview.New(),
 		helpView:       help.New(),
@@ -106,6 +110,7 @@ func NewApp(cfg config.Config) App {
 		conductorPane:  conductorpane.New(),
 		featureLinker:  featurelinker.New(),
 		showGraph:      cfg.ResolvedShowGraph(),
+		showConductor:  cfg.ResolvedShowConductor(),
 		focusPanel:     FocusDashboard,
 		conductorData:  make(map[string]*conductor.ConductorData),
 		spinners:       make(map[shared.LoaderOp]spinner.Model),
@@ -251,12 +256,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeView = DashboardView
 		a.setFeedback(shared.FeedbackSuccess, "Committed successfully", "", "")
 		cmds := []tea.Cmd{refreshAllStatus(a.cfg)}
-		// Try to match commit to conductor feature
+		// Try to match commit to conductor feature using project-aware path
 		if repo, ok := a.dashboard.SelectedRepo(); ok {
 			commitMsg := a.commitView.Value()
-			cmds = append(cmds, matchFeaturesCmd(repo.Path, "", commitMsg, nil))
+			conductorPath := a.conductorPathForActiveProject(repo.Path)
+			cmds = append(cmds, matchFeaturesCmd(conductorPath, msg.Hash, commitMsg, nil))
 		}
 		return a, tea.Batch(cmds...)
+
+	case shared.CommitContextFetchedMsg:
+		if msg.Err == nil {
+			a.commitView.SetContextData(msg.StagedStats, msg.RecentCommits, msg.FeatureSuggestions)
+		}
+		return a, nil
 
 	case shared.AICommitMsgMsg:
 		a.stopLoader(shared.OpGenerate)
@@ -267,6 +279,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.commitView.SetAIMessage(msg.Message)
 		}
 		return a, nil
+
+	case shared.UndoCommitCompleteMsg:
+		if msg.Err != nil {
+			a.setFeedback(shared.FeedbackError, "Undo failed: "+msg.Err.Error(), msg.Err.Error(), "")
+			return a, nil
+		}
+		a.setFeedback(shared.FeedbackSuccess, "Undid commit "+msg.Hash+", changes staged", "", "")
+		return a, refreshAllStatus(a.cfg)
 
 	case shared.PushCompleteMsg:
 		a.stopLoader(shared.OpPush)
@@ -293,6 +313,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case conductorDataMsg:
 		a.conductorData[msg.RepoPath] = msg.Data
 		a.conductorPane.SetData(msg.Data)
+		a.updateLinkedFeatures(msg.Data)
+		// Update project conductor summary for all-projects view
+		if msg.Data != nil {
+			for pi, proj := range a.cfg.Projects {
+				path := proj.Path
+				if path == "" && len(proj.Repos) > 0 {
+					path = proj.Repos[0].Path
+				}
+				if path == msg.RepoPath {
+					summary := shared.ConductorPassedBadge.Render(fmt.Sprintf("%d/%d", msg.Data.Passed, msg.Data.Total))
+					if len(msg.Data.Quality) > 0 {
+						summary += " " + shared.ConductorQualityBadge.Render(fmt.Sprintf("\u26a0%d", len(msg.Data.Quality)))
+					}
+					a.dashboard.SetProjectConductorSummary(pi, summary)
+					break
+				}
+			}
+		}
 		return a, nil
 
 	case featureMatchMsg:
@@ -304,10 +342,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.FeatureLinkedMsg:
 		if msg.Err == nil {
 			a.setFeedback(shared.FeedbackSuccess, "Linked to: "+msg.Description, "", "")
-			// Refresh conductor data
+			// Refresh conductor data (will also rebuild linked features)
 			if repo, ok := a.dashboard.SelectedRepo(); ok {
 				a.conductorRepo = "" // force refresh
-				return a, refreshConductorCmd(repo.Path)
+				conductorPath := a.conductorPathForActiveProject(repo.Path)
+				return a, refreshConductorCmd(conductorPath)
 			}
 		}
 		return a, nil
@@ -333,7 +372,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err == nil {
 			a.graphPane.SetCommitDetail(msg.Detail)
 			a.lastDetailHash = msg.Hash
+			// Fetch conductor context for this commit
+			if a.conductorRepo != "" {
+				return a, fetchCommitContextCmd(a.conductorRepo, msg.Hash)
+			}
 		}
+		return a, nil
+
+	case commitContextMsg:
+		a.graphPane.SetCommitContext(msg.Context)
 		return a, nil
 
 	case shared.CommitFileDiffFetchedMsg:
@@ -390,9 +437,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only auto-refresh on the dashboard view to avoid disrupting other views
 		if a.activeView == DashboardView || a.activeView == BranchPickerView {
 			cmds := []tea.Cmd{refreshAllStatus(a.cfg), pollTickCmd()}
-			// Refresh conductor data on the same tick
-			if repo, ok := a.dashboard.SelectedRepo(); ok {
-				cmds = append(cmds, refreshConductorCmd(repo.Path))
+			// Refresh conductor data on the same tick (project-aware)
+			if a.conductorRepo != "" {
+				cmds = append(cmds, refreshConductorCmd(a.conductorRepo))
+			} else if repo, ok := a.dashboard.SelectedRepo(); ok {
+				conductorPath := a.conductorPathForActiveProject(repo.Path)
+				cmds = append(cmds, refreshConductorCmd(conductorPath))
 			}
 			return a, tea.Batch(cmds...)
 		}
@@ -463,7 +513,8 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.featureLinker.Hide()
 			if result.Feature != nil {
 				if repo, ok := a.dashboard.SelectedRepo(); ok {
-					return a, linkFeatureCmd(repo.Path, result.Feature.Feature.ID,
+					conductorPath := a.conductorPathForActiveProject(repo.Path)
+					return a, linkFeatureCmd(conductorPath, result.Feature.Feature.ID,
 						a.featureLinker.CommitHash(), a.featureLinker.CommitMsg(), nil)
 				}
 			}
@@ -500,6 +551,12 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.focusPanel = FocusDashboard
 			a.layoutSizes()
 			return a, nil
+		case key.Matches(msg, shared.Keys.ToggleConductor):
+			a.showConductor = false
+			a.focusPanel = FocusDashboard
+			a.graphFocused = false
+			a.layoutSizes()
+			return a, nil
 		default:
 			var cmd tea.Cmd
 			a.conductorPane, cmd = a.conductorPane.Update(msg)
@@ -515,7 +572,7 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.focusPanel = FocusDashboard
 			return a, nil
 		case key.Matches(msg, shared.Keys.FocusRight):
-			if a.showGraph && a.width > 80 {
+			if a.showGraph && a.showConductor && a.width > 80 {
 				a.focusPanel = FocusConductor
 				a.graphFocused = false
 				return a, nil
@@ -528,6 +585,14 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.graphFocused = false
 			a.focusPanel = FocusDashboard
 			a.layoutSizes()
+			return a, nil
+		case key.Matches(msg, shared.Keys.ToggleConductor):
+			a.showConductor = !a.showConductor
+			a.layoutSizes()
+			if a.showConductor {
+				a.conductorRepo = ""
+				return a, a.maybeRefreshConductor()
+			}
 			return a, nil
 		default:
 			// Pass j/k/ctrl+j/ctrl+k/enter/pgup/pgdn etc. to graph pane
@@ -547,9 +612,81 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// All-projects mode: limited key set
+	if a.dashboard.ActiveProject() == -1 && len(a.cfg.Projects) > 0 {
+		switch {
+		case key.Matches(msg, shared.Keys.Quit):
+			return a, tea.Quit
+
+		case key.Matches(msg, shared.Keys.Down):
+			a.dashboard.MoveDown()
+			return a, a.maybeRefreshGraph()
+
+		case key.Matches(msg, shared.Keys.Up):
+			a.dashboard.MoveUp()
+			return a, a.maybeRefreshGraph()
+
+		case key.Matches(msg, shared.Keys.Open):
+			a.dashboard.EnterProject()
+			a.graphRepo = ""     // force refresh
+			a.conductorRepo = "" // force refresh
+			return a, a.maybeRefreshGraph()
+
+		case key.Matches(msg, shared.Keys.FocusRight):
+			if a.showGraph {
+				a.graphFocused = true
+				a.focusPanel = FocusGraph
+			}
+			return a, nil
+
+		case key.Matches(msg, shared.Keys.ToggleGraph):
+			a.showGraph = !a.showGraph
+			a.graphFocused = false
+			a.focusPanel = FocusDashboard
+			a.layoutSizes()
+			if a.showGraph {
+				a.graphRepo = ""
+				a.conductorRepo = ""
+				cmds := []tea.Cmd{a.maybeRefreshGraph(), a.maybeRefreshConductor()}
+				return a, tea.Batch(cmds...)
+			}
+			return a, nil
+
+		case key.Matches(msg, shared.Keys.ToggleConductor):
+			a.showConductor = !a.showConductor
+			if !a.showConductor && a.focusPanel == FocusConductor {
+				a.focusPanel = FocusDashboard
+				a.graphFocused = false
+			}
+			a.layoutSizes()
+			if a.showConductor {
+				a.conductorRepo = ""
+				return a, a.maybeRefreshConductor()
+			}
+			return a, nil
+
+		case key.Matches(msg, shared.Keys.ContextSummary):
+			spinCmd := a.startLoader(shared.OpExport, "Exporting context")
+			return a, tea.Batch(spinCmd, exportContextCmd(a.cfg, 7))
+		}
+
+		return a, nil
+	}
+
+	// Project-detail mode (or no projects configured)
 	switch {
 	case key.Matches(msg, shared.Keys.Quit):
 		return a, tea.Quit
+
+	case key.Matches(msg, shared.Keys.Escape):
+		// If inside a project, go back to all-projects view
+		if a.dashboard.ActiveProject() >= 0 {
+			a.dashboard.ExitProject()
+			a.graphRepo = ""     // force refresh
+			a.conductorRepo = "" // force refresh
+			return a, a.maybeRefreshGraph()
+		}
+		return a, nil
 
 	case key.Matches(msg, shared.Keys.FocusRight):
 		if a.showGraph {
@@ -571,6 +708,20 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case key.Matches(msg, shared.Keys.ToggleConductor):
+		a.showConductor = !a.showConductor
+		// If conductor was focused and is now hidden, return focus to dashboard
+		if !a.showConductor && a.focusPanel == FocusConductor {
+			a.focusPanel = FocusDashboard
+			a.graphFocused = false
+		}
+		a.layoutSizes()
+		if a.showConductor {
+			a.conductorRepo = "" // force refresh
+			return a, a.maybeRefreshConductor()
+		}
+		return a, nil
+
 	case key.Matches(msg, shared.Keys.Push):
 		item, ok := a.dashboard.SelectedItem()
 		if !ok {
@@ -580,6 +731,13 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.pushingRepoIdx = item.RepoIndex
 		spinCmd := a.startLoader(shared.OpPush, "Pushing "+repo.Branch+" to origin")
 		return a, tea.Batch(spinCmd, pushCmd(repo.Path, repo.Branch))
+
+	case key.Matches(msg, shared.Keys.UndoCommit):
+		repo, ok := a.dashboard.SelectedRepo()
+		if !ok {
+			return a, nil
+		}
+		return a, undoCommitCmd(repo.Path)
 
 	case key.Matches(msg, shared.Keys.ContextSummary):
 		spinCmd := a.startLoader(shared.OpExport, "Exporting context")
@@ -666,7 +824,8 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.activeView = CommitView
 		a.commitView.SetRepo(item.Repo)
-		return a, nil
+		conductorPath := a.conductorPathForActiveProject(item.Repo.Path)
+		return a, fetchCommitViewContextCmd(item.Repo.Path, conductorPath)
 
 	case key.Matches(msg, shared.Keys.Open):
 		item, ok := a.dashboard.SelectedItem()
@@ -749,7 +908,11 @@ func (a App) handleCommitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		spinCmd := a.startLoader(shared.OpGenerate, "Generating commit message")
 		return a, tea.Batch(spinCmd, generateCommitMsgCmd(repo.Path))
 
-	case msg.Type == tea.KeyEnter:
+	case key.Matches(msg, shared.Keys.CycleType):
+		a.commitView.CycleTypeForward()
+		return a, nil
+
+	case key.Matches(msg, shared.Keys.SubmitCommit):
 		message := a.commitView.Value()
 		if message == "" {
 			return a, nil
@@ -764,7 +927,7 @@ func (a App) handleCommitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, commitCmd(repo.Path, message)
 	}
 
-	// Pass through to text input
+	// Pass through to textarea (Enter inserts newlines)
 	var cmd tea.Cmd
 	a.commitView, cmd = a.commitView.Update(msg)
 	return a, cmd
@@ -834,7 +997,7 @@ func (a *App) layoutSizes() {
 		contentH = 3
 	}
 
-	if a.showGraph && a.width > 80 {
+	if a.showGraph && a.showConductor && a.width > 80 {
 		// 3-column layout: dashboard | graph | conductor
 		dashPct := a.cfg.ResolvedDashboardWidth()
 		dashW := a.width * dashPct / 100
@@ -847,7 +1010,7 @@ func (a *App) layoutSizes() {
 		a.graphPane.SetSize(graphW-1, contentH)      // -1 for left border
 		a.conductorPane.SetSize(conductorW-1, contentH) // -1 for left border
 	} else if a.showGraph && a.width > 40 {
-		// 2-column fallback for narrower terminals
+		// 2-column layout: dashboard | graph
 		graphW := a.width / 2
 		dashW := a.width - graphW
 		a.dashboard.SetSize(dashW, contentH)
@@ -861,19 +1024,51 @@ func (a *App) maybeRefreshGraph() tea.Cmd {
 	if !a.showGraph {
 		return nil
 	}
+
+	var cmds []tea.Cmd
+
+	// In all-projects mode: use first repo of highlighted project for graph
+	if a.dashboard.ActiveProject() == -1 && len(a.cfg.Projects) > 0 {
+		item, ok := a.dashboard.SelectedItem()
+		if !ok || item.Kind != dashboard.ProjectHeader {
+			return nil
+		}
+		repo, ok := a.dashboard.FirstRepoInProject(item.ProjectIndex)
+		if !ok {
+			return nil
+		}
+		if repo.Path != a.graphRepo {
+			a.graphRepo = repo.Path
+			maxCommits := a.cfg.ResolvedGraphMaxCommits()
+			cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
+		}
+		// Conductor: use project path if available
+		conductorPath := a.conductorPathForProject(item.ProjectIndex)
+		if conductorPath != a.conductorRepo {
+			a.conductorRepo = conductorPath
+			cmds = append(cmds, fetchConductorCmd(conductorPath))
+		}
+		if len(cmds) == 0 {
+			return nil
+		}
+		return tea.Batch(cmds...)
+	}
+
+	// Project-detail mode: same as before
 	repo, ok := a.dashboard.SelectedRepo()
 	if !ok {
 		return nil
 	}
-	var cmds []tea.Cmd
 	if repo.Path != a.graphRepo {
 		a.graphRepo = repo.Path
 		maxCommits := a.cfg.ResolvedGraphMaxCommits()
 		cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
 	}
-	if repo.Path != a.conductorRepo {
-		a.conductorRepo = repo.Path
-		cmds = append(cmds, fetchConductorCmd(repo.Path))
+
+	conductorPath := a.conductorPathForActiveProject(repo.Path)
+	if conductorPath != a.conductorRepo {
+		a.conductorRepo = conductorPath
+		cmds = append(cmds, fetchConductorCmd(conductorPath))
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -881,11 +1076,42 @@ func (a *App) maybeRefreshGraph() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// conductorPathForProject returns the conductor lookup path for a given project index.
+// Uses project.Path if set, otherwise falls back to first repo path.
+func (a *App) conductorPathForProject(projectIndex int) string {
+	if projectIndex < 0 || projectIndex >= len(a.cfg.Projects) {
+		return ""
+	}
+	proj := a.cfg.Projects[projectIndex]
+	if proj.Path != "" {
+		return proj.Path
+	}
+	// Fallback: use first repo path
+	if len(proj.Repos) > 0 {
+		return proj.Repos[0].Path
+	}
+	return ""
+}
+
+// conductorPathForActiveProject returns the conductor lookup path based on current active project.
+// When inside a project with a Path, uses that; otherwise uses the repo path.
+func (a *App) conductorPathForActiveProject(repoPath string) string {
+	if proj, ok := a.dashboard.ActiveProjectConfig(); ok && proj.Path != "" {
+		return proj.Path
+	}
+	return repoPath
+}
+
 func (a App) renderStatusBar() string {
 	name := a.cfg.WorkspaceName()
 
-	// Show current branch if available
+	// Show project name when drilled into a project
 	parts := []string{name}
+	if projName := a.dashboard.ProjectName(); projName != "" {
+		parts = append(parts, projName)
+	}
+
+	// Show current branch if available (only in project-detail mode)
 	if repo, ok := a.dashboard.SelectedRepo(); ok && repo.Branch != "" {
 		parts = append(parts, repo.Branch)
 	}
@@ -917,8 +1143,9 @@ func (a App) renderStatusBar() string {
 	}
 
 	// Conductor summary in status bar
-	if repo, ok := a.dashboard.SelectedRepo(); ok {
-		if data, exists := a.conductorData[repo.Path]; exists && data != nil {
+	conductorPath := a.conductorRepo
+	if conductorPath != "" {
+		if data, exists := a.conductorData[conductorPath]; exists && data != nil {
 			status += " │ " + shared.ConductorPassedBadge.Render(fmt.Sprintf("%d/%d", data.Passed, data.Total))
 			if data.Session != nil {
 				status += " " + shared.CommitDetailDateStyle.Render(fmt.Sprintf("#%d", data.Session.Number))
@@ -959,11 +1186,10 @@ func (a App) renderFatalOverlay(base string) string {
 func (a App) renderDashboardLayout(contentH int) string {
 	dashView := a.dashboard.View()
 
-	if a.showGraph && a.width > 80 {
-		// 3-column layout
+	if a.showGraph && a.showConductor && a.width > 80 {
+		// 3-column layout: dashboard | graph | conductor
 		dashPct := a.cfg.ResolvedDashboardWidth()
 		dashW := a.width * dashPct / 100
-		conductorW := a.width * 30 / 100
 		dashView = lipgloss.NewStyle().Width(dashW).Height(contentH).MaxHeight(contentH).Render(dashView)
 
 		var graphView string
@@ -979,13 +1205,12 @@ func (a App) renderDashboardLayout(contentH int) string {
 		} else {
 			condView = a.conductorPane.View()
 		}
-		_ = conductorW // used in layoutSizes
 
 		return lipgloss.JoinHorizontal(lipgloss.Top, dashView, graphView, condView)
 	}
 
 	if a.showGraph && a.width > 40 {
-		// 2-column fallback
+		// 2-column layout: dashboard | graph
 		dashW := a.width - a.width/2
 		dashView = lipgloss.NewStyle().Width(dashW).Height(contentH).MaxHeight(contentH).Render(dashView)
 
@@ -1002,18 +1227,46 @@ func (a App) renderDashboardLayout(contentH int) string {
 }
 
 func (a *App) maybeRefreshConductor() tea.Cmd {
-	if !a.showGraph {
+	if !a.showConductor {
 		return nil
 	}
-	repo, ok := a.dashboard.SelectedRepo()
-	if !ok {
+
+	var conductorPath string
+
+	// In all-projects mode: use project path
+	if a.dashboard.ActiveProject() == -1 && len(a.cfg.Projects) > 0 {
+		item, ok := a.dashboard.SelectedItem()
+		if !ok || item.Kind != dashboard.ProjectHeader {
+			return nil
+		}
+		conductorPath = a.conductorPathForProject(item.ProjectIndex)
+	} else {
+		repo, ok := a.dashboard.SelectedRepo()
+		if !ok {
+			return nil
+		}
+		conductorPath = a.conductorPathForActiveProject(repo.Path)
+	}
+
+	if conductorPath == "" || conductorPath == a.conductorRepo {
 		return nil
 	}
-	if repo.Path == a.conductorRepo {
-		return nil
+	a.conductorRepo = conductorPath
+	return fetchConductorCmd(conductorPath)
+}
+
+// updateLinkedFeatures builds a hash->description map from conductor features
+// and passes it to the graph pane for display in commit detail.
+func (a *App) updateLinkedFeatures(data *conductor.ConductorData) {
+	lf := make(map[string]string)
+	if data != nil {
+		for _, f := range data.Features {
+			if f.CommitHash != "" {
+				lf[f.CommitHash] = f.Description
+			}
+		}
 	}
-	a.conductorRepo = repo.Path
-	return fetchConductorCmd(repo.Path)
+	a.graphPane.SetLinkedFeatures(lf)
 }
 
 func fetchConductorCmd(repoPath string) tea.Cmd {
@@ -1036,6 +1289,22 @@ func fetchConductorCmd(repoPath string) tea.Cmd {
 type conductorDataMsg struct {
 	RepoPath string
 	Data     *conductor.ConductorData
+}
+
+type commitContextMsg struct {
+	Hash    string
+	Context *conductor.CommitContext
+}
+
+func fetchCommitContextCmd(conductorPath, hash string) tea.Cmd {
+	return func() tea.Msg {
+		db, err := conductor.Open(conductorPath)
+		if err != nil || db == nil {
+			return commitContextMsg{Hash: hash}
+		}
+		ctx, _ := db.GetCommitContext(hash)
+		return commitContextMsg{Hash: hash, Context: ctx}
+	}
 }
 
 func refreshConductorCmd(repoPath string) tea.Cmd {
@@ -1140,7 +1409,11 @@ func fetchDiffCmd(repoPath, filePath string, entry git.FileEntry) tea.Cmd {
 func commitCmd(repoPath, message string) tea.Cmd {
 	return func() tea.Msg {
 		err := git.Commit(repoPath, message)
-		return shared.CommitCompleteMsg{Err: err}
+		if err != nil {
+			return shared.CommitCompleteMsg{Err: err}
+		}
+		hash, _ := git.GetHeadHash(repoPath)
+		return shared.CommitCompleteMsg{Hash: hash}
 	}
 }
 
@@ -1182,7 +1455,11 @@ func fetchCommitDetailCmd(repoPath, hash string) tea.Cmd {
 func amendCmd(repoPath, message string) tea.Cmd {
 	return func() tea.Msg {
 		err := git.CommitAmend(repoPath, message)
-		return shared.CommitCompleteMsg{Err: err}
+		if err != nil {
+			return shared.CommitCompleteMsg{Err: err}
+		}
+		hash, _ := git.GetHeadHash(repoPath)
+		return shared.CommitCompleteMsg{Hash: hash}
 	}
 }
 
@@ -1190,6 +1467,13 @@ func pushCmd(repoPath, branch string) tea.Cmd {
 	return func() tea.Msg {
 		err := git.Push(repoPath, branch)
 		return shared.PushCompleteMsg{Branch: branch, Err: err}
+	}
+}
+
+func undoCommitCmd(repoPath string) tea.Cmd {
+	return func() tea.Msg {
+		hash, err := git.UndoLastCommit(repoPath)
+		return shared.UndoCommitCompleteMsg{Hash: hash, Err: err}
 	}
 }
 
@@ -1204,6 +1488,34 @@ func generateCommitMsgCmd(repoPath string) tea.Cmd {
 		}
 		msg, err := ai.GenerateCommitMessage(diff)
 		return shared.AICommitMsgMsg{Message: msg, Err: err}
+	}
+}
+
+func fetchCommitViewContextCmd(repoPath, conductorPath string) tea.Cmd {
+	return func() tea.Msg {
+		stats, _ := git.GetStagedDiffStats(repoPath)
+		recent, _ := git.GetRecentCommitsByCount(repoPath, 5)
+
+		var features []conductor.FeatureMatch
+		db, err := conductor.Open(conductorPath)
+		if err == nil && db != nil {
+			// Get pending features as suggestions
+			allFeatures, _ := db.GetFeatures("")
+			for _, f := range allFeatures {
+				if f.Status != "passed" {
+					features = append(features, conductor.FeatureMatch{
+						Feature: f,
+						Score:   0,
+					})
+				}
+			}
+		}
+
+		return shared.CommitContextFetchedMsg{
+			StagedStats:        stats,
+			RecentCommits:      recent,
+			FeatureSuggestions: features,
+		}
 	}
 }
 

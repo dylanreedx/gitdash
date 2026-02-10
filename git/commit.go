@@ -11,5 +11,11 @@ func CommitAmend(repoPath, message string) error {
 }
 
 func LastCommitMessage(repoPath string) (string, error) {
-	return RunGit(repoPath, "log", "-1", "--format=%s")
+	return RunGit(repoPath, "log", "-1", "--format=%B")
+}
+
+func UndoLastCommit(repoPath string) (string, error) {
+	hash, _ := GetHeadHash(repoPath)
+	_, err := RunGit(repoPath, "reset", "--soft", "HEAD~1")
+	return hash, err
 }

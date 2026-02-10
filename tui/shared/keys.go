@@ -26,7 +26,11 @@ type KeyMap struct {
 	Push           key.Binding
 	AmendToggle    key.Binding
 	GenerateMsg    key.Binding
-	ContextSummary key.Binding
+	SubmitCommit   key.Binding
+	ContextSummary   key.Binding
+	ToggleConductor  key.Binding
+	CycleType        key.Binding
+	UndoCommit       key.Binding
 }
 
 var Keys = KeyMap{
@@ -122,9 +126,25 @@ var Keys = KeyMap{
 		key.WithKeys("tab"),
 		key.WithHelp("tab", "AI generate"),
 	),
+	SubmitCommit: key.NewBinding(
+		key.WithKeys("ctrl+y"),
+		key.WithHelp("C-y", "commit"),
+	),
 	ContextSummary: key.NewBinding(
 		key.WithKeys("ctrl+x"),
 		key.WithHelp("C-x", "export context"),
+	),
+	ToggleConductor: key.NewBinding(
+		key.WithKeys("C"),
+		key.WithHelp("C", "toggle conductor"),
+	),
+	CycleType: key.NewBinding(
+		key.WithKeys("ctrl+t"),
+		key.WithHelp("C-t", "cycle type"),
+	),
+	UndoCommit: key.NewBinding(
+		key.WithKeys("ctrl+z"),
+		key.WithHelp("C-z", "undo commit"),
 	),
 }
 
@@ -137,7 +157,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.NextRepo, k.PrevRepo},
 		{k.FocusLeft, k.FocusRight, k.FocusDown, k.FocusUp},
 		{k.Stage, k.Unstage, k.StageAll, k.UnstageAll},
-		{k.Diff, k.Commit, k.Push, k.Open, k.Branch},
-		{k.ToggleGraph, k.ContextSummary, k.Help, k.Quit, k.Escape},
+		{k.Diff, k.Commit, k.Push, k.UndoCommit, k.Open, k.Branch},
+		{k.ToggleGraph, k.ToggleConductor, k.ContextSummary, k.Help, k.Quit, k.Escape},
 	}
 }

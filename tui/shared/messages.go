@@ -1,6 +1,9 @@
 package shared
 
-import "github.com/dylan/gitdash/git"
+import (
+	"github.com/dylan/gitdash/conductor"
+	"github.com/dylan/gitdash/git"
+)
 
 type StatusRefreshedMsg struct {
 	Repos []git.RepoStatus
@@ -17,7 +20,8 @@ type DiffFetchedMsg struct {
 }
 
 type CommitCompleteMsg struct {
-	Err error
+	Hash string
+	Err  error
 }
 
 type CloseDiffMsg struct{}
@@ -71,6 +75,11 @@ type PushCompleteMsg struct {
 	Err    error
 }
 
+type UndoCommitCompleteMsg struct {
+	Hash string
+	Err  error
+}
+
 type ContextSummaryCopiedMsg struct {
 	Summary    string
 	NumCommits int
@@ -90,4 +99,11 @@ type FeatureLinkedMsg struct {
 	CommitHash  string
 	Description string
 	Err         error
+}
+
+type CommitContextFetchedMsg struct {
+	StagedStats        []git.CommitFileStat
+	RecentCommits      []git.RecentCommitInfo
+	FeatureSuggestions []conductor.FeatureMatch
+	Err                error
 }
