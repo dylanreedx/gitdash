@@ -243,6 +243,80 @@ func (d *DB) GetAllData() (*ConductorData, error) {
 	}, nil
 }
 
+// GetCommitContext returns enriched conductor context for a commit hash.
+// Returns nil, nil if the commit is not tracked in the conductor DB.
+func (d *DB) GetCommitContext(hash string) (*CommitContext, error) {
+	// Look up commit by short hash prefix match
+	var featureID, sessionID sql.NullString
+	err := d.db.QueryRow(`SELECT feature_id, session_id FROM commits WHERE commit_hash LIKE ?||'%' LIMIT 1`, hash).
+		Scan(&featureID, &sessionID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := &CommitContext{}
+
+	// Fetch feature
+	if featureID.Valid && featureID.String != "" {
+		row := d.db.QueryRow(`SELECT id, category, description, status, phase, attempt_count,
+			COALESCE(commit_hash, ''), COALESCE(last_error, '')
+			FROM features WHERE id = ?`, featureID.String)
+		var f Feature
+		if err := row.Scan(&f.ID, &f.Category, &f.Description, &f.Status,
+			&f.Phase, &f.AttemptCount, &f.CommitHash, &f.LastError); err == nil {
+			ctx.Feature = &f
+		}
+
+		// Fetch errors for this feature
+		rows, err := d.db.Query(`SELECT error, error_type, attempt_number
+			FROM feature_errors WHERE feature_id = ? ORDER BY attempt_number`, featureID.String)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var fe FeatureError
+				if err := rows.Scan(&fe.Error, &fe.ErrorType, &fe.AttemptNumber); err == nil {
+					ctx.Errors = append(ctx.Errors, fe)
+				}
+			}
+		}
+
+		// Fetch memories matching feature category
+		if ctx.Feature != nil && ctx.Feature.Category != "" {
+			memRows, err := d.db.Query(`SELECT id, name, content, COALESCE(tags, '[]')
+				FROM memories WHERE tags LIKE '%' || ? || '%' LIMIT 3`, ctx.Feature.Category)
+			if err == nil {
+				defer memRows.Close()
+				for memRows.Next() {
+					var m Memory
+					var tags string
+					if err := memRows.Scan(&m.ID, &m.Name, &m.Content, &tags); err == nil {
+						json.Unmarshal([]byte(tags), &m.Tags)
+						ctx.Memories = append(ctx.Memories, m)
+					}
+				}
+			}
+		}
+	}
+
+	// Fetch session
+	if sessionID.Valid && sessionID.String != "" {
+		row := d.db.QueryRow(`SELECT id, session_number, status,
+			COALESCE(progress_notes, ''),
+			COALESCE(started_at, 0), COALESCE(completed_at, 0)
+			FROM sessions WHERE id = ?`, sessionID.String)
+		var s Session
+		if err := row.Scan(&s.ID, &s.Number, &s.Status, &s.ProgressNotes,
+			&s.StartedAt, &s.CompletedAt); err == nil {
+			ctx.Session = &s
+		}
+	}
+
+	return ctx, nil
+}
+
 // GetCommitFiles returns files_changed from prior commits on a feature.
 func (d *DB) GetCommitFiles(featureID string) ([]string, error) {
 	rows, err := d.db.Query(`SELECT COALESCE(files_changed, '[]')

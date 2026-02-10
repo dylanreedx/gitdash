@@ -16,7 +16,8 @@ import (
 type ItemKind int
 
 const (
-	RepoHeader    ItemKind = iota
+	ProjectHeader ItemKind = iota
+	RepoHeader
 	SectionHeader
 	DocHeader
 	FolderHeader
@@ -24,14 +25,15 @@ const (
 )
 
 type FlatItem struct {
-	Kind      ItemKind
-	RepoIndex int
-	FileIndex int
-	File      *git.FileEntry
-	Repo      *git.RepoStatus
-	Section   string // "staged", "unstaged", or "docs"
-	Tier      int    // 1=bright, 2=normal, 3=dim
-	Dir       string // directory path for folder grouping
+	Kind         ItemKind
+	RepoIndex    int
+	FileIndex    int
+	ProjectIndex int // which project this item belongs to
+	File         *git.FileEntry
+	Repo         *git.RepoStatus
+	Section      string // "staged", "unstaged", or "docs"
+	Tier         int    // 1=bright, 2=normal, 3=dim
+	Dir          string // directory path for folder grouping
 }
 
 type Model struct {
@@ -44,7 +46,16 @@ type Model struct {
 	pushingRepos     map[int]string  // repoIndex -> spinner view string
 	priorityRules    []config.PriorityRule
 	display          config.DisplayConfig
+
+	// Project grouping
+	projects      []config.ProjectConfig
+	activeProject int // -1 = all-projects view, 0+ = inside project N
+
+	// Conductor summary per project (for all-projects view)
+	projectConductor map[int]string // projectIndex -> summary string
+
 	cursor           int
+	scrollOffset     int
 	width            int
 	height           int
 }
@@ -55,8 +66,10 @@ func New(rules []config.PriorityRule, display config.DisplayConfig) Model {
 		docsCollapsed:    make(map[int]bool),
 		foldersCollapsed: make(map[string]bool),
 		pushingRepos:     make(map[int]string),
+		projectConductor: make(map[int]string),
 		priorityRules:    rules,
 		display:          display,
+		activeProject:    -1,
 	}
 }
 
@@ -89,6 +102,94 @@ func (m *Model) SetRepos(repos []git.RepoStatus) {
 		}
 	}
 	m.rebuildFlatItems()
+}
+
+// SetProjects sets the project list and starts in all-projects mode.
+func (m *Model) SetProjects(projects []config.ProjectConfig) {
+	m.projects = projects
+	m.activeProject = -1
+}
+
+// ActiveProject returns the current project index (-1 = all-projects view).
+func (m Model) ActiveProject() int {
+	return m.activeProject
+}
+
+// SelectedProject returns the project at the cursor in all-projects mode.
+func (m Model) SelectedProject() (*config.ProjectConfig, bool) {
+	if m.activeProject != -1 {
+		return nil, false
+	}
+	item, ok := m.SelectedItem()
+	if !ok || item.Kind != ProjectHeader {
+		return nil, false
+	}
+	if item.ProjectIndex < 0 || item.ProjectIndex >= len(m.projects) {
+		return nil, false
+	}
+	return &m.projects[item.ProjectIndex], true
+}
+
+// EnterProject drills into the project at the cursor.
+func (m *Model) EnterProject() {
+	item, ok := m.SelectedItem()
+	if !ok || item.Kind != ProjectHeader {
+		return
+	}
+	m.activeProject = item.ProjectIndex
+	m.cursor = 0
+	m.scrollOffset = 0
+	m.rebuildFlatItems()
+}
+
+// ExitProject returns to the all-projects view.
+func (m *Model) ExitProject() {
+	prev := m.activeProject
+	m.activeProject = -1
+	m.cursor = 0
+	m.scrollOffset = 0
+	m.rebuildFlatItems()
+	// Try to restore cursor to the project we just exited
+	for i, item := range m.flatItems {
+		if item.Kind == ProjectHeader && item.ProjectIndex == prev {
+			m.cursor = i
+			m.ensureCursorVisible()
+			break
+		}
+	}
+}
+
+// SetProjectConductorSummary sets the conductor summary for a project in all-projects view.
+func (m *Model) SetProjectConductorSummary(projectIndex int, summary string) {
+	m.projectConductor[projectIndex] = summary
+}
+
+// ProjectName returns the name of the active project, or empty string.
+func (m Model) ProjectName() string {
+	if m.activeProject >= 0 && m.activeProject < len(m.projects) {
+		return m.projects[m.activeProject].Name
+	}
+	return ""
+}
+
+// ActiveProjectConfig returns the active project config, if any.
+func (m Model) ActiveProjectConfig() (*config.ProjectConfig, bool) {
+	if m.activeProject >= 0 && m.activeProject < len(m.projects) {
+		return &m.projects[m.activeProject], true
+	}
+	return nil, false
+}
+
+// FirstRepoInProject returns the first repo in the given project.
+func (m Model) FirstRepoInProject(projectIndex int) (*git.RepoStatus, bool) {
+	if projectIndex < 0 || projectIndex >= len(m.projects) {
+		return nil, false
+	}
+	offset := m.projectRepoOffset(projectIndex)
+	if offset < len(m.repos) {
+		return &m.repos[offset], true
+	}
+	return nil, false
 }
 
 func (m *Model) ToggleCollapse() {
@@ -149,136 +250,173 @@ func (m *Model) rebuildFlatItems() {
 	m.flatItems = nil
 	m.repoHeaders = nil
 
-	for ri := range m.repos {
-		repo := &m.repos[ri]
-
-		// Repo header
-		m.repoHeaders = append(m.repoHeaders, len(m.flatItems))
-		m.flatItems = append(m.flatItems, FlatItem{
-			Kind:      RepoHeader,
-			RepoIndex: ri,
-			Repo:      repo,
-		})
-
-		if repo.Error != nil || m.collapsed[ri] {
-			continue
+	if m.activeProject == -1 && len(m.projects) > 0 {
+		// All-projects mode: show project headers only
+		for pi := range m.projects {
+			m.flatItems = append(m.flatItems, FlatItem{
+				Kind:         ProjectHeader,
+				ProjectIndex: pi,
+			})
 		}
+	} else {
+		// Project-detail mode (or no projects configured): show repos
+		var reposToShow []int // global repo indices
+		var projectIndex int
 
-		// Collect file indices, optionally separating docs
-		var staged, unstaged, docFiles []int
-		for fi := range repo.Files {
-			if m.display.GroupDocs && isDocFile(repo.Files[fi].Path) {
-				docFiles = append(docFiles, fi)
-			} else if repo.Files[fi].StagingState == git.Staged {
-				staged = append(staged, fi)
-			} else {
-				unstaged = append(unstaged, fi)
+		if m.activeProject >= 0 && m.activeProject < len(m.projects) {
+			projectIndex = m.activeProject
+			offset := m.projectRepoOffset(m.activeProject)
+			for i := range m.projects[m.activeProject].Repos {
+				reposToShow = append(reposToShow, offset+i)
+			}
+		} else {
+			// Fallback: show all repos
+			for i := range m.repos {
+				reposToShow = append(reposToShow, i)
 			}
 		}
 
-		// Sort each group by dir (if grouping), then tier, then path
-		sortFiles := func(indices []int) {
-			sort.SliceStable(indices, func(i, j int) bool {
-				pi := repo.Files[indices[i]].Path
-				pj := repo.Files[indices[j]].Path
-				if m.display.GroupFolders {
-					di := filepath.Dir(pi)
-					dj := filepath.Dir(pj)
-					if di != dj {
-						return di < dj
+		for _, ri := range reposToShow {
+			if ri >= len(m.repos) {
+				continue
+			}
+			repo := &m.repos[ri]
+
+			// Repo header
+			m.repoHeaders = append(m.repoHeaders, len(m.flatItems))
+			m.flatItems = append(m.flatItems, FlatItem{
+				Kind:         RepoHeader,
+				RepoIndex:    ri,
+				ProjectIndex: projectIndex,
+				Repo:         repo,
+			})
+
+			if repo.Error != nil || m.collapsed[ri] {
+				continue
+			}
+
+			// Collect file indices, optionally separating docs
+			var staged, unstaged, docFiles []int
+			for fi := range repo.Files {
+				if m.display.GroupDocs && isDocFile(repo.Files[fi].Path) {
+					docFiles = append(docFiles, fi)
+				} else if repo.Files[fi].StagingState == git.Staged {
+					staged = append(staged, fi)
+				} else {
+					unstaged = append(unstaged, fi)
+				}
+			}
+
+			// Sort each group by dir (if grouping), then tier, then path
+			sortFiles := func(indices []int) {
+				sort.SliceStable(indices, func(i, j int) bool {
+					pi := repo.Files[indices[i]].Path
+					pj := repo.Files[indices[j]].Path
+					if m.display.GroupFolders {
+						di := filepath.Dir(pi)
+						dj := filepath.Dir(pj)
+						if di != dj {
+							return di < dj
+						}
 					}
-				}
-				ti := resolveTier(pi, m.priorityRules)
-				tj := resolveTier(pj, m.priorityRules)
-				if ti != tj {
-					return ti < tj
-				}
-				return pi < pj
-			})
-		}
-		sortFiles(staged)
-		sortFiles(unstaged)
-
-		// appendFilesWithFolders adds file items, inserting FolderHeaders when dir changes
-		appendFilesWithFolders := func(indices []int, section string) {
-			lastDir := ""
-			for _, fi := range indices {
-				file := &repo.Files[fi]
-				dir := filepath.Dir(file.Path)
-				if m.display.GroupFolders && dir != "." && dir != lastDir {
-					m.flatItems = append(m.flatItems, FlatItem{
-						Kind:      FolderHeader,
-						RepoIndex: ri,
-						Repo:      repo,
-						Section:   section,
-						Dir:       dir,
-					})
-					lastDir = dir
-				}
-				// Skip files under collapsed folder
-				if m.display.GroupFolders && dir != "." && m.isFolderCollapsed(ri, dir) {
-					continue
-				}
-				m.flatItems = append(m.flatItems, FlatItem{
-					Kind:      File,
-					RepoIndex: ri,
-					FileIndex: fi,
-					File:      file,
-					Repo:      repo,
-					Section:   section,
-					Tier:      resolveTier(file.Path, m.priorityRules),
-					Dir:       dir,
+					ti := resolveTier(pi, m.priorityRules)
+					tj := resolveTier(pj, m.priorityRules)
+					if ti != tj {
+						return ti < tj
+					}
+					return pi < pj
 				})
 			}
-		}
+			sortFiles(staged)
+			sortFiles(unstaged)
 
-		// Staged section
-		if len(staged) > 0 {
-			m.flatItems = append(m.flatItems, FlatItem{
-				Kind:      SectionHeader,
-				RepoIndex: ri,
-				Repo:      repo,
-				Section:   "staged",
-			})
-			appendFilesWithFolders(staged, "staged")
-		}
-
-		// Unstaged section
-		if len(unstaged) > 0 {
-			m.flatItems = append(m.flatItems, FlatItem{
-				Kind:      SectionHeader,
-				RepoIndex: ri,
-				Repo:      repo,
-				Section:   "unstaged",
-			})
-			appendFilesWithFolders(unstaged, "unstaged")
-		}
-
-		// Documents section (collapsible)
-		if len(docFiles) > 0 {
-			m.flatItems = append(m.flatItems, FlatItem{
-				Kind:      DocHeader,
-				RepoIndex: ri,
-				Repo:      repo,
-				Section:   "docs",
-			})
-
-			if !m.isDocsCollapsed(ri) {
-				// Sort docs by path
-				sort.SliceStable(docFiles, func(i, j int) bool {
-					return repo.Files[docFiles[i]].Path < repo.Files[docFiles[j]].Path
-				})
-				for _, fi := range docFiles {
+			// appendFilesWithFolders adds file items, inserting FolderHeaders when dir changes
+			appendFilesWithFolders := func(indices []int, section string) {
+				lastDir := ""
+				for _, fi := range indices {
 					file := &repo.Files[fi]
+					dir := filepath.Dir(file.Path)
+					if m.display.GroupFolders && dir != "." && dir != lastDir {
+						m.flatItems = append(m.flatItems, FlatItem{
+							Kind:         FolderHeader,
+							RepoIndex:    ri,
+							ProjectIndex: projectIndex,
+							Repo:         repo,
+							Section:      section,
+							Dir:          dir,
+						})
+						lastDir = dir
+					}
+					// Skip files under collapsed folder
+					if m.display.GroupFolders && dir != "." && m.isFolderCollapsed(ri, dir) {
+						continue
+					}
 					m.flatItems = append(m.flatItems, FlatItem{
-						Kind:      File,
-						RepoIndex: ri,
-						FileIndex: fi,
-						File:      file,
-						Repo:      repo,
-						Section:   "docs",
-						Tier:      3,
+						Kind:         File,
+						RepoIndex:    ri,
+						FileIndex:    fi,
+						ProjectIndex: projectIndex,
+						File:         file,
+						Repo:         repo,
+						Section:      section,
+						Tier:         resolveTier(file.Path, m.priorityRules),
+						Dir:          dir,
 					})
+				}
+			}
+
+			// Staged section
+			if len(staged) > 0 {
+				m.flatItems = append(m.flatItems, FlatItem{
+					Kind:         SectionHeader,
+					RepoIndex:    ri,
+					ProjectIndex: projectIndex,
+					Repo:         repo,
+					Section:      "staged",
+				})
+				appendFilesWithFolders(staged, "staged")
+			}
+
+			// Unstaged section
+			if len(unstaged) > 0 {
+				m.flatItems = append(m.flatItems, FlatItem{
+					Kind:         SectionHeader,
+					RepoIndex:    ri,
+					ProjectIndex: projectIndex,
+					Repo:         repo,
+					Section:      "unstaged",
+				})
+				appendFilesWithFolders(unstaged, "unstaged")
+			}
+
+			// Documents section (collapsible)
+			if len(docFiles) > 0 {
+				m.flatItems = append(m.flatItems, FlatItem{
+					Kind:         DocHeader,
+					RepoIndex:    ri,
+					ProjectIndex: projectIndex,
+					Repo:         repo,
+					Section:      "docs",
+				})
+
+				if !m.isDocsCollapsed(ri) {
+					// Sort docs by path
+					sort.SliceStable(docFiles, func(i, j int) bool {
+						return repo.Files[docFiles[i]].Path < repo.Files[docFiles[j]].Path
+					})
+					for _, fi := range docFiles {
+						file := &repo.Files[fi]
+						m.flatItems = append(m.flatItems, FlatItem{
+							Kind:         File,
+							RepoIndex:    ri,
+							FileIndex:    fi,
+							ProjectIndex: projectIndex,
+							File:         file,
+							Repo:         repo,
+							Section:      "docs",
+							Tier:         3,
+						})
+					}
 				}
 			}
 		}
@@ -294,6 +432,7 @@ func (m *Model) rebuildFlatItems() {
 
 	// If cursor is on a section header, move to next file
 	m.skipSectionHeaders(1)
+	m.ensureCursorVisible()
 }
 
 // resolveTier determines a file's priority tier from rules. Default is tier 2.
@@ -336,6 +475,15 @@ func isNonSelectable(kind ItemKind) bool {
 	return kind == SectionHeader
 }
 
+// projectRepoOffset returns the global repo index offset for repos in a given project.
+func (m Model) projectRepoOffset(projectIndex int) int {
+	offset := 0
+	for i := 0; i < projectIndex && i < len(m.projects); i++ {
+		offset += len(m.projects[i].Repos)
+	}
+	return offset
+}
+
 func (m *Model) skipSectionHeaders(dir int) {
 	if len(m.flatItems) == 0 {
 		return
@@ -355,10 +503,23 @@ func (m *Model) skipSectionHeaders(dir int) {
 	}
 }
 
+func (m *Model) ensureCursorVisible() {
+	visibleH := m.height - 2
+	if visibleH < 1 {
+		visibleH = 1
+	}
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	} else if m.cursor >= m.scrollOffset+visibleH {
+		m.scrollOffset = m.cursor - visibleH + 1
+	}
+}
+
 func (m *Model) MoveDown() {
 	if m.cursor < len(m.flatItems)-1 {
 		m.cursor++
 		m.skipSectionHeaders(1)
+		m.ensureCursorVisible()
 	}
 }
 
@@ -366,6 +527,7 @@ func (m *Model) MoveUp() {
 	if m.cursor > 0 {
 		m.cursor--
 		m.skipSectionHeaders(-1)
+		m.ensureCursorVisible()
 	}
 }
 
@@ -376,11 +538,13 @@ func (m *Model) NextRepo() {
 	for _, idx := range m.repoHeaders {
 		if idx > m.cursor {
 			m.cursor = idx
+			m.ensureCursorVisible()
 			return
 		}
 	}
 	// Wrap around
 	m.cursor = m.repoHeaders[0]
+	m.ensureCursorVisible()
 }
 
 func (m *Model) PrevRepo() {
@@ -390,11 +554,13 @@ func (m *Model) PrevRepo() {
 	for i := len(m.repoHeaders) - 1; i >= 0; i-- {
 		if m.repoHeaders[i] < m.cursor {
 			m.cursor = m.repoHeaders[i]
+			m.ensureCursorVisible()
 			return
 		}
 	}
 	// Wrap around
 	m.cursor = m.repoHeaders[len(m.repoHeaders)-1]
+	m.ensureCursorVisible()
 }
 
 func (m Model) SelectedItem() (FlatItem, bool) {
@@ -406,7 +572,7 @@ func (m Model) SelectedItem() (FlatItem, bool) {
 
 func (m Model) SelectedRepo() (*git.RepoStatus, bool) {
 	item, ok := m.SelectedItem()
-	if !ok {
+	if !ok || item.Repo == nil {
 		return nil, false
 	}
 	return item.Repo, true
@@ -435,17 +601,12 @@ func (m Model) View() string {
 		visibleHeight = 20
 	}
 
-	scrollOffset := 0
-	if m.cursor >= visibleHeight {
-		scrollOffset = m.cursor - visibleHeight + 1
-	}
-
 	var b strings.Builder
 	for i, item := range m.flatItems {
-		if i < scrollOffset {
+		if i < m.scrollOffset {
 			continue
 		}
-		if i >= scrollOffset+visibleHeight {
+		if i >= m.scrollOffset+visibleHeight {
 			break
 		}
 
@@ -462,6 +623,8 @@ func (m Model) View() string {
 
 func (m Model) renderItem(item FlatItem) string {
 	switch item.Kind {
+	case ProjectHeader:
+		return m.renderProjectHeader(item)
 	case RepoHeader:
 		return m.renderRepoHeader(item)
 	case SectionHeader:
@@ -474,6 +637,59 @@ func (m Model) renderItem(item FlatItem) string {
 		return m.renderFile(item)
 	}
 	return ""
+}
+
+func (m Model) renderProjectHeader(item FlatItem) string {
+	if item.ProjectIndex < 0 || item.ProjectIndex >= len(m.projects) {
+		return ""
+	}
+	proj := m.projects[item.ProjectIndex]
+	name := shared.RepoHeaderStyle.Render(proj.Name)
+
+	repoCount := len(proj.Repos)
+	label := "repos"
+	if repoCount == 1 {
+		label = "repo"
+	}
+	count := shared.HelpDescStyle.Render(fmt.Sprintf("(%d %s)", repoCount, label))
+
+	// Count total changes across project repos
+	offset := m.projectRepoOffset(item.ProjectIndex)
+	var totalChanges int
+	allClean := true
+	for i := 0; i < len(proj.Repos); i++ {
+		ri := offset + i
+		if ri < len(m.repos) {
+			if m.repos[ri].Error != nil {
+				allClean = false
+			} else if len(m.repos[ri].Files) > 0 {
+				totalChanges += len(m.repos[ri].Files)
+				allClean = false
+			}
+		}
+	}
+
+	left := fmt.Sprintf("  ▶ %s %s", name, count)
+
+	if allClean && totalChanges == 0 {
+		left += " " + shared.HelpDescStyle.Render("— clean")
+	} else if totalChanges > 0 {
+		left += " " + shared.HelpDescStyle.Render(fmt.Sprintf("%d changes", totalChanges))
+	}
+
+	// Conductor summary badge (if set)
+	if summary, ok := m.projectConductor[item.ProjectIndex]; ok && summary != "" {
+		badgeW := lipgloss.Width(summary)
+		leftW := lipgloss.Width(left)
+		gap := m.width - leftW - badgeW - 1
+		if gap < 1 {
+			left += " " + summary
+		} else {
+			left += strings.Repeat(" ", gap) + summary
+		}
+	}
+
+	return left
 }
 
 func (m Model) renderRepoHeader(item FlatItem) string {

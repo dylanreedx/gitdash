@@ -55,6 +55,37 @@ func GetRecentCommits(repoPath string, days int) ([]RecentCommitInfo, error) {
 	return commits, nil
 }
 
+// GetRecentCommitsByCount returns the last N commits for a repo.
+func GetRecentCommitsByCount(repoPath string, count int) ([]RecentCommitInfo, error) {
+	out, err := RunGit(repoPath, "log", fmt.Sprintf("-n%d", count), "--format=%h|%an|%ai|%ar|%s")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+
+	var commits []RecentCommitInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 {
+			continue
+		}
+		commits = append(commits, RecentCommitInfo{
+			Hash:         parts[0],
+			Author:       parts[1],
+			Date:         parts[2],
+			RelativeDate: parts[3],
+			Message:      parts[4],
+		})
+	}
+	return commits, nil
+}
+
 func parseFilesChanged(stat string) int {
 	// e.g. " 3 files changed, 10 insertions(+), 2 deletions(-)"
 	parts := strings.Fields(stat)

@@ -11,8 +11,19 @@ import (
 
 type Config struct {
 	Theme      ThemeConfig       `toml:"theme"`
-	Workspaces []WorkspaceConfig `toml:"workspace"`
+	Workspace  WorkspaceInfo     `toml:"workspace"`
+	Projects   []ProjectConfig   `toml:"project"`
 	Display    DisplayConfig     `toml:"display"`
+}
+
+type WorkspaceInfo struct {
+	Name string `toml:"name"`
+}
+
+type ProjectConfig struct {
+	Name  string       `toml:"name"`
+	Path  string       `toml:"path"` // project root (conductor.db lives here)
+	Repos []RepoConfig `toml:"repo"`
 }
 
 type ThemeConfig struct {
@@ -62,11 +73,6 @@ type PrefixColor struct {
 	BG string `toml:"bg"`
 }
 
-type WorkspaceConfig struct {
-	Name  string       `toml:"name"`
-	Repos []RepoConfig `toml:"repo"`
-}
-
 type RepoConfig struct {
 	Path           string   `toml:"path"`
 	IgnorePatterns []string `toml:"ignore_patterns"`
@@ -80,6 +86,7 @@ type DisplayConfig struct {
 	Priority        []PriorityRule `toml:"priority"`
 	GraphMaxCommits int            `toml:"graph_max_commits"`
 	ShowGraph       *bool          `toml:"show_graph"`
+	ShowConductor   *bool          `toml:"show_conductor"`
 	DashboardWidth  int            `toml:"dashboard_width"` // percentage, default 25 (with conductor) or 50 (without)
 }
 
@@ -134,9 +141,30 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("resolving config directory: %w", err)
 	}
 
-	for wi := range cfg.Workspaces {
-		for ri := range cfg.Workspaces[wi].Repos {
-			repo := &cfg.Workspaces[wi].Repos[ri]
+	for pi := range cfg.Projects {
+		proj := &cfg.Projects[pi]
+
+		// Resolve project path
+		if proj.Path != "" {
+			if strings.HasPrefix(proj.Path, "~/") {
+				if home, err := os.UserHomeDir(); err == nil {
+					proj.Path = filepath.Join(home, proj.Path[2:])
+				}
+			}
+			if !filepath.IsAbs(proj.Path) {
+				proj.Path = filepath.Join(absConfigDir, proj.Path)
+			}
+			info, err := os.Stat(proj.Path)
+			if err != nil {
+				return cfg, fmt.Errorf("project path %q: %w", proj.Path, err)
+			}
+			if !info.IsDir() {
+				return cfg, fmt.Errorf("project path %q is not a directory", proj.Path)
+			}
+		}
+
+		for ri := range proj.Repos {
+			repo := &proj.Repos[ri]
 
 			// Expand ~ prefix
 			if strings.HasPrefix(repo.Path, "~/") {
@@ -145,8 +173,13 @@ func Load(path string) (Config, error) {
 				}
 			}
 
+			// Resolve relative repo paths against project path (or config dir)
 			if !filepath.IsAbs(repo.Path) {
-				repo.Path = filepath.Join(absConfigDir, repo.Path)
+				if proj.Path != "" {
+					repo.Path = filepath.Join(proj.Path, repo.Path)
+				} else {
+					repo.Path = filepath.Join(absConfigDir, repo.Path)
+				}
 			}
 
 			info, err := os.Stat(repo.Path)
@@ -162,21 +195,19 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// AllRepos returns all repos across all workspaces.
+// AllRepos returns all repos across all projects.
 func (c Config) AllRepos() []RepoConfig {
 	var repos []RepoConfig
-	for _, ws := range c.Workspaces {
-		repos = append(repos, ws.Repos...)
+	for _, proj := range c.Projects {
+		repos = append(repos, proj.Repos...)
 	}
 	return repos
 }
 
-// WorkspaceName returns the name of the first workspace, or "GitDash" as fallback.
+// WorkspaceName returns the workspace name, or "GitDash" as fallback.
 func (c Config) WorkspaceName() string {
-	for _, ws := range c.Workspaces {
-		if ws.Name != "" {
-			return ws.Name
-		}
+	if c.Workspace.Name != "" {
+		return c.Workspace.Name
 	}
 	return "GitDash"
 }
@@ -332,6 +363,14 @@ func (c Config) ResolvedShowGraph() bool {
 		return *c.Display.ShowGraph
 	}
 	return true
+}
+
+// ResolvedShowConductor returns the configured show_conductor or false as default.
+func (c Config) ResolvedShowConductor() bool {
+	if c.Display.ShowConductor != nil {
+		return *c.Display.ShowConductor
+	}
+	return false
 }
 
 // ResolvedDashboardWidth returns the configured dashboard width percentage or 25 as default.

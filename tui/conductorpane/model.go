@@ -61,8 +61,7 @@ type Model struct {
 func New() Model {
 	return Model{
 		collapsed: map[ItemKind]bool{
-			FeatureHeader: true, // features collapsed by default (header shows N/N passed)
-			MemoryHeader:  true, // memories collapsed by default
+			MemoryHeader: true, // memories collapsed by default
 		},
 	}
 }

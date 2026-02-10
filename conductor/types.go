@@ -51,6 +51,21 @@ type Memory struct {
 	Tags    []string
 }
 
+// FeatureError represents a single error encountered while implementing a feature.
+type FeatureError struct {
+	Error         string
+	ErrorType     string // build_error, test_failure, runtime_error, blocked, other
+	AttemptNumber int
+}
+
+// CommitContext holds conductor context for a specific commit.
+type CommitContext struct {
+	Feature  *Feature
+	Session  *Session
+	Errors   []FeatureError
+	Memories []Memory
+}
+
 // FeatureMatch represents a scored match between a commit and a feature.
 type FeatureMatch struct {
 	Feature Feature

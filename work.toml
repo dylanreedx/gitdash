@@ -1,5 +1,5 @@
 [workspace]
-name = "dev"
+name = "work"
 
 [[project]]
 name = "selectus"
@@ -15,6 +15,19 @@ path = "selectus-ui"
 path = "selectus-print-service"
 
 [[project]]
+name = "blackcove"
+path = "../../work/blackcove"
+
+[[project.repo]]
+path = "blackcove-ms"
+
+[[project.repo]]
+path = "blackcove-studio"
+
+[[project.repo]]
+path = "blackcove-survey"
+
+[[project]]
 name = "keel"
 path = "../../work/keel"
 
@@ -26,24 +39,6 @@ path = "keel-ui-rest"
 
 [[project.repo]]
 path = "keel-falconet"
-
-[[project]]
-name = "gitdash"
-
-[[project.repo]]
-path = "../gitdash"
-
-[[project]]
-name = "fam-trip"
-
-[[project.repo]]
-path = "../boese-west-coast-trip-2026"
-
-[[project]]
-name = "bite"
-
-[[project.repo]]
-path = "../bite"
 
 [display]
 icons = true

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/dylan/gitdash/conductor"
 	"github.com/dylan/gitdash/git"
 	"github.com/dylan/gitdash/tui/icons"
 	"github.com/dylan/gitdash/tui/shared"
@@ -49,6 +50,12 @@ type Model struct {
 	// Section focus
 	activeSection Section
 
+	// Linked features: short hash prefix -> feature description
+	linkedFeatures map[string]string
+
+	// Conductor commit context (enriched detail)
+	commitContext *conductor.CommitContext
+
 	showIcons bool
 
 	ready  bool
@@ -63,9 +70,15 @@ func (m *Model) SetShowIcons(show bool) {
 
 func New() Model {
 	return Model{
-		fileExpanded: make(map[string]bool),
-		fileDiffs:    make(map[string]string),
+		fileExpanded:   make(map[string]bool),
+		fileDiffs:      make(map[string]string),
+		linkedFeatures: make(map[string]string),
 	}
+}
+
+// SetLinkedFeatures sets the commit hash -> feature description map for display in commit detail.
+func (m *Model) SetLinkedFeatures(lf map[string]string) {
+	m.linkedFeatures = lf
 }
 
 func (m *Model) SetSize(w, h int) {
@@ -169,9 +182,16 @@ func (m *Model) buildRenderedLines() {
 func (m *Model) SetCommitDetail(detail git.CommitDetail) {
 	m.detail = &detail
 	m.detailHash = detail.Hash
+	m.commitContext = nil // clear stale context
 	m.fileCursor = 0
 	m.fileExpanded = make(map[string]bool)
 	m.fileDiffs = make(map[string]string)
+	m.rebuildViewports()
+}
+
+// SetCommitContext sets the conductor context for the current commit detail.
+func (m *Model) SetCommitContext(ctx *conductor.CommitContext) {
+	m.commitContext = ctx
 	m.rebuildViewports()
 }
 
@@ -554,9 +574,6 @@ func (m Model) renderDetail() string {
 		b.WriteString("\n")
 	}
 
-	// Separator
-	b.WriteString("\n")
-
 	// Badge-style stats
 	if d.TotalAdd > 0 || d.TotalDel > 0 {
 		b.WriteString("  ")
@@ -568,7 +585,115 @@ func (m Model) renderDetail() string {
 		b.WriteString("\n")
 	}
 
+	// Conductor context block
+	if m.commitContext != nil {
+		b.WriteString(m.renderCommitContext())
+	} else if desc := m.findLinkedFeature(d.Hash); desc != "" {
+		// Fallback: simple linked feature badge
+		b.WriteString("\n")
+		b.WriteString("  ")
+		b.WriteString(shared.ConductorPassedBadge.Render("feat"))
+		b.WriteString("   ")
+		b.WriteString(shared.CommitDetailMsgStyle.Render(desc))
+		b.WriteString("\n")
+	}
+
 	b.WriteString(divider)
+
+	return b.String()
+}
+
+// renderCommitContext renders the conductor context block within commit detail.
+func (m Model) renderCommitContext() string {
+	ctx := m.commitContext
+	if ctx == nil {
+		return ""
+	}
+
+	label := shared.CommitDetailLabelStyle
+	var b strings.Builder
+
+	b.WriteString("\n")
+
+	// Session
+	if ctx.Session != nil {
+		b.WriteString("  ")
+		b.WriteString(label.Render("session"))
+		b.WriteString(" ")
+		b.WriteString(shared.CommitDetailHashStyle.Render(fmt.Sprintf("#%d", ctx.Session.Number)))
+		b.WriteString("\n")
+	}
+
+	// Feature
+	if ctx.Feature != nil {
+		indicator := "○" // pending
+		switch ctx.Feature.Status {
+		case "passed":
+			indicator = shared.StagedFileStyle.Render("✓")
+		case "in_progress":
+			indicator = shared.UnstagedFileStyle.Render("●")
+		case "failed":
+			indicator = shared.ErrorStyle.Render("✗")
+		case "blocked":
+			indicator = shared.DimFileStyle.Render("⊘")
+		}
+		desc := ctx.Feature.Description
+		maxLen := m.width - 14 // account for label + indicator + padding
+		if maxLen > 0 && len(desc) > maxLen {
+			desc = desc[:maxLen-1] + "…"
+		}
+		b.WriteString("  ")
+		b.WriteString(label.Render("feature"))
+		b.WriteString(" ")
+		b.WriteString(indicator)
+		b.WriteString(" ")
+		b.WriteString(shared.CommitDetailMsgStyle.Render(desc))
+		b.WriteString("\n")
+	}
+
+	// Errors
+	if len(ctx.Errors) > 0 {
+		b.WriteString("  ")
+		b.WriteString(label.Render("errors "))
+		b.WriteString(" ")
+		b.WriteString(shared.CommitDetailDateStyle.Render(fmt.Sprintf("%d resolved", len(ctx.Errors))))
+		b.WriteString("\n")
+
+		for i, fe := range ctx.Errors {
+			errMsg := fe.Error
+			maxLen := m.width - 16
+			if maxLen > 0 && len(errMsg) > maxLen {
+				errMsg = errMsg[:maxLen-1] + "…"
+			}
+			// Last error gets ✓ if feature is passed
+			if i == len(ctx.Errors)-1 && ctx.Feature != nil && ctx.Feature.Status == "passed" {
+				b.WriteString("    ")
+				b.WriteString(shared.StagedFileStyle.Render(fmt.Sprintf("✓ [%d]", fe.AttemptNumber)))
+				b.WriteString(" ")
+				b.WriteString(shared.DimFileStyle.Render(errMsg))
+				b.WriteString("\n")
+			} else {
+				b.WriteString("    ")
+				b.WriteString(shared.ErrorStyle.Render(fmt.Sprintf("✗ [%d]", fe.AttemptNumber)))
+				b.WriteString(" ")
+				b.WriteString(shared.DimFileStyle.Render(errMsg))
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	// Memories
+	if len(ctx.Memories) > 0 {
+		b.WriteString("  ")
+		b.WriteString(label.Render("memory "))
+		b.WriteString(" ")
+		var names []string
+		for _, mem := range ctx.Memories {
+			names = append(names, mem.Name)
+		}
+		b.WriteString(shared.DimFileStyle.Render(strings.Join(names, ", ")))
+		b.WriteString("\n")
+	}
 
 	return b.String()
 }
@@ -619,6 +744,31 @@ func (m Model) renderFiles() string {
 		}
 	}
 	return b.String()
+}
+
+// findLinkedFeature checks if the given commit hash matches any linked feature.
+// It tries both direct lookup and prefix matching.
+func (m Model) findLinkedFeature(hash string) string {
+	if len(m.linkedFeatures) == 0 || hash == "" {
+		return ""
+	}
+	// Direct match
+	if desc, ok := m.linkedFeatures[hash]; ok {
+		return desc
+	}
+	// Prefix match: linked features may store short hashes
+	for prefix, desc := range m.linkedFeatures {
+		if prefix != "" && strings.HasPrefix(hash, prefix) {
+			return desc
+		}
+	}
+	// Reverse prefix: hash may be shorter than stored key
+	for key, desc := range m.linkedFeatures {
+		if key != "" && strings.HasPrefix(key, hash) {
+			return desc
+		}
+	}
+	return ""
 }
 
 // --- Helpers ---

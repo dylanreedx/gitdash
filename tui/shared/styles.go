@@ -105,6 +105,9 @@ var (
 	StagedIndicator   string
 	UnstagedIndicator string
 
+	// Project header
+	ProjectHeaderStyle lipgloss.Style
+
 	// Conductor pane
 	ConductorBorderStyle        lipgloss.Style
 	ConductorBorderFocusedStyle lipgloss.Style
@@ -115,6 +118,11 @@ var (
 	ConductorQualityBadge     lipgloss.Style
 	ConductorWarningHeaderStyle lipgloss.Style
 	ConductorWarningTextStyle   lipgloss.Style
+
+	// Commit view two-panel
+	CommitSectionHeaderStyle lipgloss.Style
+	CommitTypeDimStyle       lipgloss.Style
+	CommitRightBorderStyle   lipgloss.Style
 )
 
 // InitStyles configures all styles from a resolved theme.
@@ -338,6 +346,10 @@ func InitStyles(theme config.ThemeConfig, graphColors ...[]string) {
 	StagedIndicator = StagedFileStyle.Render("✓")
 	UnstagedIndicator = UnstagedFileStyle.Render("○")
 
+	ProjectHeaderStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(theme.Accent))
+
 	// Conductor pane — reuse graph border pattern
 	ConductorBorderStyle = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
@@ -368,6 +380,18 @@ func InitStyles(theme config.ThemeConfig, graphColors ...[]string) {
 
 	ConductorWarningTextStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.FeedbackWarningFG))
+
+	CommitSectionHeaderStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(theme.Dim))
+
+	CommitTypeDimStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Muted)).
+		Padding(0, 1)
+
+	CommitRightBorderStyle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(theme.Muted))
 }
 
 // RenderPath renders a file path with dim directories and bright filename.
