@@ -38,6 +38,7 @@ const (
 	DiffView
 	CommitView
 	BranchPickerView
+	ProjectManagerView
 )
 
 // FocusPanel tracks which column has focus in the 3-column layout.

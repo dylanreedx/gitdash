@@ -31,6 +31,7 @@ type KeyMap struct {
 	ToggleConductor  key.Binding
 	CycleType        key.Binding
 	UndoCommit       key.Binding
+	ProjectManager   key.Binding
 }
 
 var Keys = KeyMap{
@@ -146,6 +147,10 @@ var Keys = KeyMap{
 		key.WithKeys("ctrl+z"),
 		key.WithHelp("C-z", "undo commit"),
 	),
+	ProjectManager: key.NewBinding(
+		key.WithKeys("P"),
+		key.WithHelp("P", "projects"),
+	),
 }
 
 func (k KeyMap) ShortHelp() []key.Binding {
@@ -158,6 +163,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.FocusLeft, k.FocusRight, k.FocusDown, k.FocusUp},
 		{k.Stage, k.Unstage, k.StageAll, k.UnstageAll},
 		{k.Diff, k.Commit, k.Push, k.UndoCommit, k.Open, k.Branch},
-		{k.ToggleGraph, k.ToggleConductor, k.ContextSummary, k.Help, k.Quit, k.Escape},
+		{k.ToggleGraph, k.ToggleConductor, k.ContextSummary, k.ProjectManager, k.Help, k.Quit, k.Escape},
 	}
 }
