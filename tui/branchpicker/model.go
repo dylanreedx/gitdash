@@ -34,11 +34,12 @@ type KeyResult struct {
 var branchPrefixes = []string{"feat/", "fix/", "chore/", "refactor/", ""}
 
 type Model struct {
-	mode     Mode
-	branches []git.BranchInfo
-	filtered []git.BranchInfo
-	repoPath string
-	cursor   int
+	mode         Mode
+	branches     []git.BranchInfo
+	filtered     []git.BranchInfo
+	repoPath     string
+	cursor       int
+	scrollOffset int
 
 	filterInput textinput.Model
 	createInput textinput.Model
@@ -73,6 +74,7 @@ func (m *Model) SetBranches(branches []git.BranchInfo, repoPath string) {
 	m.repoPath = repoPath
 	m.mode = PickMode
 	m.cursor = 0
+	m.scrollOffset = 0
 	m.prefixIdx = 0
 	m.filterInput.SetValue("")
 	m.filterInput.Focus()
@@ -94,6 +96,29 @@ func (m *Model) applyFilter() {
 	}
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)
+	}
+	m.scrollOffset = 0
+	m.ensureCursorVisible()
+}
+
+// listHeight returns how many branch items fit in the visible area.
+func (m Model) listHeight() int {
+	h := 15
+	if len(m.filtered) < h {
+		h = len(m.filtered)
+	}
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+func (m *Model) ensureCursorVisible() {
+	h := m.listHeight()
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	} else if m.cursor >= m.scrollOffset+h {
+		m.scrollOffset = m.cursor - h + 1
 	}
 }
 
@@ -125,10 +150,12 @@ func (m *Model) handlePickKey(msg tea.KeyMsg) KeyResult {
 	case "j", "down":
 		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
+			m.ensureCursorVisible()
 		}
 	case "k", "up":
 		if m.cursor > 0 {
 			m.cursor--
+			m.ensureCursorVisible()
 		}
 	case "enter":
 		if m.cursor < len(m.filtered) {
@@ -197,17 +224,13 @@ func (m Model) renderPickMode() string {
 	b.WriteString(m.filterInput.View())
 	b.WriteString("\n\n")
 
-	maxVisible := 15
-	if len(m.filtered) < maxVisible {
-		maxVisible = len(m.filtered)
+	visibleH := m.listHeight()
+	end := m.scrollOffset + visibleH
+	if end > len(m.filtered) {
+		end = len(m.filtered)
 	}
 
-	start := 0
-	if m.cursor >= maxVisible {
-		start = m.cursor - maxVisible + 1
-	}
-
-	for i := start; i < len(m.filtered) && i < start+maxVisible; i++ {
+	for i := m.scrollOffset; i < end; i++ {
 		branch := m.filtered[i]
 		marker := "  "
 		style := shared.BranchItemStyle

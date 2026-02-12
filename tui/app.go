@@ -114,7 +114,7 @@ func NewApp(cfg config.Config, configPath string) App {
 		branchPicker:   branchpicker.New(),
 		conductorPane:  conductorpane.New(),
 		featureLinker:  featurelinker.New(),
-		projectManager: projectmanager.New(filepath.Dir(configPath)),
+		projectManager: projectmanager.New(filepath.Dir(configPath), cfg.ResolvedScanRoot()),
 		showGraph:      cfg.ResolvedShowGraph(),
 		showConductor:  cfg.ResolvedShowConductor(),
 		focusPanel:     FocusDashboard,
@@ -1120,6 +1120,11 @@ func (a *App) layoutSizes() {
 
 func (a *App) maybeRefreshGraph() tea.Cmd {
 	if !a.showGraph {
+		return nil
+	}
+
+	// Don't re-fetch graph while user is interacting with files section
+	if a.focusPanel == FocusGraph && a.graphPane.ActiveSection() == graphpane.FilesSection {
 		return nil
 	}
 

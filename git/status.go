@@ -174,7 +174,14 @@ func parseStatusChar(c byte) FileStatus {
 func getAheadBehind(repoPath string) (ahead, behind int) {
 	out, err := RunGit(repoPath, "rev-list", "--count", "--left-right", "@{upstream}...HEAD")
 	if err != nil {
-		return 0, 0 // no upstream tracked
+		// No upstream tracking branch (e.g. new local branch).
+		// Count commits not reachable from any remote branch.
+		out, err = RunGit(repoPath, "rev-list", "--count", "HEAD", "--not", "--remotes")
+		if err != nil {
+			return 0, 0
+		}
+		ahead, _ = strconv.Atoi(strings.TrimSpace(out))
+		return ahead, 0
 	}
 	parts := strings.Fields(out)
 	if len(parts) != 2 {

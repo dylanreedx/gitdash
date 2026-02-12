@@ -7,7 +7,8 @@ const (
 	OpPush     LoaderOp = "push"
 	OpGenerate LoaderOp = "generate"
 	OpFetch    LoaderOp = "fetch"
-	OpExport   LoaderOp = "export"
+	OpExport    LoaderOp = "export"
+	OpAISuggest LoaderOp = "ai_suggest"
 )
 
 // LoaderStartMsg starts an animated spinner for an operation.

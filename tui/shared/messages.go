@@ -107,3 +107,8 @@ type CommitContextFetchedMsg struct {
 	FeatureSuggestions []conductor.FeatureMatch
 	Err                error
 }
+
+type AIFeatureSuggestMsg struct {
+	RankedIDs []string
+	Err       error
+}

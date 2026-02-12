@@ -1,51 +1,48 @@
 [workspace]
-name = "dev"
+  name = "dev"
+  scan_root = "~/Documents"
 
 [[project]]
-name = "selectus"
-path = "../../work/selectus"
+  name = "selectus"
+  path = "../../work/selectus"
 
-[[project.repo]]
-path = "selectus-ms"
+  [[project.repo]]
+    path = "selectus-ms"
 
-[[project.repo]]
-path = "selectus-ui"
+  [[project.repo]]
+    path = "selectus-ui"
 
-[[project.repo]]
-path = "selectus-print-service"
-
-[[project]]
-name = "keel"
-path = "../../work/keel"
-
-[[project.repo]]
-path = "keel-ms-rest"
-
-[[project.repo]]
-path = "keel-ui-rest"
-
-[[project.repo]]
-path = "keel-falconet"
+  [[project.repo]]
+    path = "selectus-print-service"
 
 [[project]]
-name = "gitdash"
+  name = "keel"
+  path = "../../work/keel"
 
-[[project.repo]]
-path = "../gitdash"
+  [[project.repo]]
+    path = "keel-ms-rest"
+
+  [[project.repo]]
+    path = "keel-ui-rest"
+
+  [[project.repo]]
+    path = "keel-falconet"
 
 [[project]]
-name = "fam-trip"
+  name = "gitdash"
 
-[[project.repo]]
-path = "../boese-west-coast-trip-2026"
+  [[project.repo]]
+    path = "."
 
 [[project]]
-name = "bite"
+  name = "fam-trip"
 
-[[project.repo]]
-path = "../bite"
+  [[project.repo]]
+    path = "../boese-west-coast-trip-2026"
 
 [display]
-icons = true
-group_docs = true
-group_folders = true
+  icons = true
+  group_folders = true
+  group_docs = true
+  graph_max_commits = 0
+  dashboard_width = 0

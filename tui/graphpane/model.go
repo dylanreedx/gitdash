@@ -102,6 +102,10 @@ func (m *Model) rebuildViewports() {
 
 	graphH, _, filesH := m.sectionHeights()
 
+	// Save scroll positions before rebuilding
+	savedGraphY := m.graphVP.YOffset
+	savedFilesY := m.filesVP.YOffset
+
 	m.graphVP = viewport.New(m.width, graphH)
 	m.filesVP = viewport.New(m.width, filesH)
 
@@ -110,6 +114,10 @@ func (m *Model) rebuildViewports() {
 		m.ensureGraphCursorVisible()
 	}
 	m.filesVP.SetContent(m.renderFiles())
+
+	// Restore scroll positions
+	m.graphVP.SetYOffset(savedGraphY)
+	m.filesVP.SetYOffset(savedFilesY)
 }
 
 func (m Model) sectionHeights() (graphH, detailH, filesH int) {
@@ -142,30 +150,45 @@ func (m Model) sectionHeights() (graphH, detailH, filesH int) {
 }
 
 func (m *Model) SetGraph(lines []git.GraphLine, repoPath string) {
+	sameRepo := repoPath == m.repoPath
+
 	m.lines = lines
 	m.repoPath = repoPath
-	m.detail = nil
-	m.detailHash = ""
-	m.fileCursor = 0
-	m.fileExpanded = make(map[string]bool)
-	m.fileDiffs = make(map[string]string)
-	m.activeSection = GraphSection
+
+	// Only reset detail/file state when switching repos
+	if !sameRepo {
+		m.detail = nil
+		m.detailHash = ""
+		m.fileCursor = 0
+		m.fileExpanded = make(map[string]bool)
+		m.fileDiffs = make(map[string]string)
+		m.activeSection = GraphSection
+	}
 
 	// Build commit indices
+	oldCount := len(m.commitIndices)
 	m.commitIndices = nil
 	for i, l := range lines {
 		if l.IsCommit {
 			m.commitIndices = append(m.commitIndices, i)
 		}
 	}
-	m.cursor = 0
+
+	// Preserve cursor position on same-repo refresh (polling)
+	if !sameRepo || len(m.commitIndices) != oldCount {
+		m.cursor = 0
+	} else if m.cursor >= len(m.commitIndices) {
+		m.cursor = max(0, len(m.commitIndices)-1)
+	}
 
 	// Build cached rendered lines (expensive, done once)
 	m.buildRenderedLines()
 
 	if m.ready {
 		m.rebuildViewports()
-		m.graphVP.GotoTop()
+		if !sameRepo || len(m.commitIndices) != oldCount {
+			m.graphVP.GotoTop()
+		}
 	}
 }
 

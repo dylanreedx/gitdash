@@ -17,7 +17,8 @@ type Config struct {
 }
 
 type WorkspaceInfo struct {
-	Name string `toml:"name"`
+	Name     string `toml:"name"`
+	ScanRoot string `toml:"scan_root,omitempty"` // root dir for project manager fuzzy finder
 }
 
 type ProjectConfig struct {
@@ -112,6 +113,23 @@ func (c Config) ResolvedPriorityRules() []PriorityRule {
 		return c.Display.Priority
 	}
 	return DefaultPriorityRules()
+}
+
+// ResolvedScanRoot returns the configured scan_root (with ~ expanded), or ~/Documents as default.
+func (c Config) ResolvedScanRoot() string {
+	root := c.Workspace.ScanRoot
+	if root != "" {
+		if strings.HasPrefix(root, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				return filepath.Join(home, root[2:])
+			}
+		}
+		return root
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "Documents")
+	}
+	return "."
 }
 
 // DefaultConfigPath returns ~/.config/gitdash/config.toml.

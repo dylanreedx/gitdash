@@ -68,8 +68,10 @@ type CommitContext struct {
 
 // FeatureMatch represents a scored match between a commit and a feature.
 type FeatureMatch struct {
-	Feature Feature
-	Score   float64
+	Feature  Feature
+	Score    float64
+	AIRanked bool // boosted by AI suggestion
+	AIRank   int  // 1 = top pick, 2 = second, etc. (0 = not ranked)
 }
 
 // ConductorData holds all conductor state for a repo.

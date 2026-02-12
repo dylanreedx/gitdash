@@ -86,6 +86,7 @@ type Model struct {
 
 	// Dir finder
 	configDir    string
+	scanRoot     string
 	allDirs      []DirEntry
 	filteredDirs []DirEntry
 	dirCursor    int
@@ -93,7 +94,7 @@ type Model struct {
 	showDirList  bool
 }
 
-func New(configDir string) Model {
+func New(configDir, scanRoot string) Model {
 	ni := textinput.New()
 	ni.Placeholder = "project name..."
 	ni.CharLimit = 100
@@ -106,6 +107,7 @@ func New(configDir string) Model {
 		nameInput: ni,
 		pathInput: pi,
 		configDir: configDir,
+		scanRoot:  scanRoot,
 	}
 }
 
@@ -234,19 +236,11 @@ func (m *Model) scanRootForMode() string {
 				return p
 			}
 		}
-		return m.configDir
+		return m.scanRoot
 	case ModeAddProject, ModeEdit:
-		parent := filepath.Dir(m.configDir)
-		if parent != "" && parent != "." {
-			return parent
-		}
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return home
-		}
-		return m.configDir
+		return m.scanRoot
 	}
-	return m.configDir
+	return m.scanRoot
 }
 
 // applyDirFilter filters allDirs by the current pathInput value (case-insensitive substring).

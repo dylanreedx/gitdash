@@ -1,46 +1,55 @@
 [workspace]
-name = "work"
+  name = "work"
+  scan_root = "~/Documents"
 
 [[project]]
-name = "selectus"
-path = "../../work/selectus"
+  name = "selectus"
+  path = "../../work/selectus"
 
-[[project.repo]]
-path = "selectus-ms"
+  [[project.repo]]
+    path = "selectus-ms"
 
-[[project.repo]]
-path = "selectus-ui"
+  [[project.repo]]
+    path = "selectus-ui"
 
-[[project.repo]]
-path = "selectus-print-service"
-
-[[project]]
-name = "blackcove"
-path = "../../work/blackcove"
-
-[[project.repo]]
-path = "blackcove-ms"
-
-[[project.repo]]
-path = "blackcove-studio"
-
-[[project.repo]]
-path = "blackcove-survey"
+  [[project.repo]]
+    path = "selectus-print-service"
 
 [[project]]
-name = "keel"
-path = "../../work/keel"
+  name = "blackcove"
+  path = "../../work/blackcove"
 
-[[project.repo]]
-path = "keel-ms-rest"
+  [[project.repo]]
+    path = "blackcove-ms"
 
-[[project.repo]]
-path = "keel-ui-rest"
+  [[project.repo]]
+    path = "blackcove-studio"
 
-[[project.repo]]
-path = "keel-falconet"
+  [[project.repo]]
+    path = "blackcove-survey"
+
+[[project]]
+  name = "keel"
+  path = "../../work/keel"
+
+  [[project.repo]]
+    path = "keel-ms-rest"
+
+  [[project.repo]]
+    path = "keel-ui-rest"
+
+  [[project.repo]]
+    path = "keel-falconet"
+
+[[project]]
+  name = "synthia-ms"
+
+  [[project.repo]]
+    path = "../../work/syn-ms"
 
 [display]
-icons = true
-group_docs = true
-group_folders = true
+  icons = true
+  group_folders = true
+  group_docs = true
+  graph_max_commits = 0
+  dashboard_width = 0

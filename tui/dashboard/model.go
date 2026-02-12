@@ -431,7 +431,7 @@ func (m *Model) rebuildFlatItems() {
 	}
 
 	// If cursor is on a section header, move to next file
-	m.skipSectionHeaders(1)
+	m.skipNonSelectable(1)
 	m.ensureCursorVisible()
 }
 
@@ -484,7 +484,7 @@ func (m Model) projectRepoOffset(projectIndex int) int {
 	return offset
 }
 
-func (m *Model) skipSectionHeaders(dir int) {
+func (m *Model) skipNonSelectable(dir int) {
 	if len(m.flatItems) == 0 {
 		return
 	}
@@ -503,22 +503,28 @@ func (m *Model) skipSectionHeaders(dir int) {
 	}
 }
 
-func (m *Model) ensureCursorVisible() {
-	visibleH := m.height - 2
-	if visibleH < 1 {
-		visibleH = 1
+// listHeight returns how many items fit in the visible area.
+func (m Model) listHeight() int {
+	h := m.height - 1 // -1 for trailing newline
+	if h < 1 {
+		h = 1
 	}
+	return h
+}
+
+func (m *Model) ensureCursorVisible() {
+	h := m.listHeight()
 	if m.cursor < m.scrollOffset {
 		m.scrollOffset = m.cursor
-	} else if m.cursor >= m.scrollOffset+visibleH {
-		m.scrollOffset = m.cursor - visibleH + 1
+	} else if m.cursor >= m.scrollOffset+h {
+		m.scrollOffset = m.cursor - h + 1
 	}
 }
 
 func (m *Model) MoveDown() {
 	if m.cursor < len(m.flatItems)-1 {
 		m.cursor++
-		m.skipSectionHeaders(1)
+		m.skipNonSelectable(1)
 		m.ensureCursorVisible()
 	}
 }
@@ -526,7 +532,7 @@ func (m *Model) MoveDown() {
 func (m *Model) MoveUp() {
 	if m.cursor > 0 {
 		m.cursor--
-		m.skipSectionHeaders(-1)
+		m.skipNonSelectable(-1)
 		m.ensureCursorVisible()
 	}
 }
@@ -595,11 +601,7 @@ func (m Model) View() string {
 		return "\n  No repos configured or no changes found.\n"
 	}
 
-	// Compute visible window
-	visibleHeight := m.height - 2 // leave room for status bar
-	if visibleHeight < 1 {
-		visibleHeight = 20
-	}
+	visibleHeight := m.listHeight()
 
 	var b strings.Builder
 	for i, item := range m.flatItems {
