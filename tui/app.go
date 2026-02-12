@@ -51,6 +51,7 @@ const (
 
 type App struct {
 	cfg        config.Config
+	configPath string
 	activeView ActiveView
 	showHelp   bool
 	statusMsg  string
@@ -88,7 +89,7 @@ type App struct {
 	height int
 }
 
-func NewApp(cfg config.Config) App {
+func NewApp(cfg config.Config, configPath string) App {
 	shared.InitStyles(cfg.ResolvedTheme(), cfg.ResolvedGraphColors())
 	icons.SetNerdFonts(cfg.Display.NerdFonts)
 
@@ -100,6 +101,7 @@ func NewApp(cfg config.Config) App {
 
 	return App{
 		cfg:            cfg,
+		configPath:     configPath,
 		activeView:     DashboardView,
 		dashboard:      dash,
 		diffView:       diffview.New(),
@@ -216,6 +218,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if s, ok := a.spinners[shared.OpGenerate]; ok {
 			a.commitView.SetSpinnerView(s.View())
+		}
+		if s, ok := a.spinners[shared.OpAISuggest]; ok {
+			a.featureLinker.SetAISpinner(s.View())
 		}
 		return a, tea.Batch(cmds...)
 
@@ -334,8 +339,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case featureMatchMsg:
-		if len(msg.Matches) > 0 {
-			a.featureLinker.Show(msg.Matches, msg.CommitHash, msg.CommitMsg)
+		// Show overlay even if scored matches are empty (user can search all features)
+		if len(msg.Matches) > 0 || len(msg.AllFeatures) > 0 {
+			a.featureLinker.Show(msg.Matches, msg.CommitHash, msg.CommitMsg,
+				msg.AllFeatures, msg.ConductorData)
+			// Fire async AI suggestion
+			a.featureLinker.SetAIPending(true)
+			spinCmd := a.startLoader(shared.OpAISuggest, "Analyzing features")
+			return a, tea.Batch(spinCmd, aiSuggestFeaturesCmd(msg.CommitMsg, msg.AllFeatures))
+		}
+		return a, nil
+
+	case shared.AIFeatureSuggestMsg:
+		a.stopLoader(shared.OpAISuggest)
+		if a.featureLinker.IsVisible() {
+			a.featureLinker.SetAISuggestions(msg.RankedIDs)
 		}
 		return a, nil
 
@@ -511,6 +529,7 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch result.Action {
 		case featurelinker.ActionLink:
 			a.featureLinker.Hide()
+			a.stopLoader(shared.OpAISuggest)
 			if result.Feature != nil {
 				if repo, ok := a.dashboard.SelectedRepo(); ok {
 					conductorPath := a.conductorPathForActiveProject(repo.Path)
@@ -521,7 +540,14 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case featurelinker.ActionSkip:
 			a.featureLinker.Hide()
+			a.stopLoader(shared.OpAISuggest)
 			return a, nil
+		}
+		// In search mode, forward non-navigation keys to textinput
+		if a.featureLinker.InSearchMode() {
+			var cmd tea.Cmd
+			a.featureLinker, cmd = a.featureLinker.Update(msg)
+			return a, cmd
 		}
 		return a, nil
 	}
@@ -1037,19 +1063,14 @@ func (a *App) maybeRefreshGraph() tea.Cmd {
 		if !ok {
 			return nil
 		}
-		if repo.Path != a.graphRepo {
-			a.graphRepo = repo.Path
-			maxCommits := a.cfg.ResolvedGraphMaxCommits()
-			cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
-		}
+		a.graphRepo = repo.Path
+		maxCommits := a.cfg.ResolvedGraphMaxCommits()
+		cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
 		// Conductor: use project path if available
 		conductorPath := a.conductorPathForProject(item.ProjectIndex)
 		if conductorPath != a.conductorRepo {
 			a.conductorRepo = conductorPath
 			cmds = append(cmds, fetchConductorCmd(conductorPath))
-		}
-		if len(cmds) == 0 {
-			return nil
 		}
 		return tea.Batch(cmds...)
 	}
@@ -1059,11 +1080,9 @@ func (a *App) maybeRefreshGraph() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	if repo.Path != a.graphRepo {
-		a.graphRepo = repo.Path
-		maxCommits := a.cfg.ResolvedGraphMaxCommits()
-		cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
-	}
+	a.graphRepo = repo.Path
+	maxCommits := a.cfg.ResolvedGraphMaxCommits()
+	cmds = append(cmds, fetchGraphCmd(repo.Path, maxCommits))
 
 	conductorPath := a.conductorPathForActiveProject(repo.Path)
 	if conductorPath != a.conductorRepo {
@@ -1325,20 +1344,48 @@ func matchFeaturesCmd(repoPath, commitHash, commitMsg string, changedFiles []str
 			return featureMatchMsg{}
 		}
 		matches, _ := db.MatchFeature(commitMsg, changedFiles)
+		data, _ := db.GetAllData()
+		var allFeatures []conductor.Feature
+		if data != nil {
+			allFeatures = data.Features
+		}
 		return featureMatchMsg{
-			RepoPath:   repoPath,
-			Matches:    matches,
-			CommitHash: commitHash,
-			CommitMsg:  commitMsg,
+			RepoPath:      repoPath,
+			Matches:       matches,
+			AllFeatures:   allFeatures,
+			ConductorData: data,
+			CommitHash:    commitHash,
+			CommitMsg:     commitMsg,
 		}
 	}
 }
 
 type featureMatchMsg struct {
-	RepoPath   string
-	Matches    []conductor.FeatureMatch
-	CommitHash string
-	CommitMsg  string
+	RepoPath      string
+	Matches       []conductor.FeatureMatch
+	AllFeatures   []conductor.Feature
+	ConductorData *conductor.ConductorData
+	CommitHash    string
+	CommitMsg     string
+}
+
+func aiSuggestFeaturesCmd(commitMsg string, features []conductor.Feature) tea.Cmd {
+	return func() tea.Msg {
+		var briefs []ai.FeatureBrief
+		for _, f := range features {
+			if f.Status == "pending" || f.Status == "in_progress" || f.Status == "failed" {
+				briefs = append(briefs, ai.FeatureBrief{
+					ID:          f.ID,
+					Description: f.Description,
+					Category:    f.Category,
+					Status:      f.Status,
+					Phase:       f.Phase,
+				})
+			}
+		}
+		ranked, err := ai.SuggestFeatureLinks(commitMsg, briefs)
+		return shared.AIFeatureSuggestMsg{RankedIDs: ranked, Err: err}
+	}
 }
 
 func linkFeatureCmd(repoPath, featureID, commitHash, commitMsg string, files []string) tea.Cmd {
