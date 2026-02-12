@@ -27,45 +27,45 @@ type ProjectConfig struct {
 }
 
 type ThemeConfig struct {
-	BG          string   `toml:"bg"`
-	FG          string   `toml:"fg"`
-	Accent      string   `toml:"accent"`
-	Accent2     string   `toml:"accent2"`
-	Muted       string   `toml:"muted"`
-	Dim         string   `toml:"dim"`
-	Staged      string   `toml:"staged"`
-	Unstaged    string   `toml:"unstaged"`
-	DiffAdd     string   `toml:"diff_add"`
-	DiffRemove  string   `toml:"diff_remove"`
-	DiffHunk    string   `toml:"diff_hunk"`
-	RepoHeader  string   `toml:"repo_header"`
-	Branch      string   `toml:"branch"`
-	StatusBarBG string   `toml:"status_bar_bg"`
-	StatusBarFG string   `toml:"status_bar_fg"`
-	Error       string   `toml:"error"`
-	CursorBG    string   `toml:"cursor_bg"`
-	GraphColors []string `toml:"graph_colors"`
+	BG          string   `toml:"bg,omitempty"`
+	FG          string   `toml:"fg,omitempty"`
+	Accent      string   `toml:"accent,omitempty"`
+	Accent2     string   `toml:"accent2,omitempty"`
+	Muted       string   `toml:"muted,omitempty"`
+	Dim         string   `toml:"dim,omitempty"`
+	Staged      string   `toml:"staged,omitempty"`
+	Unstaged    string   `toml:"unstaged,omitempty"`
+	DiffAdd     string   `toml:"diff_add,omitempty"`
+	DiffRemove  string   `toml:"diff_remove,omitempty"`
+	DiffHunk    string   `toml:"diff_hunk,omitempty"`
+	RepoHeader  string   `toml:"repo_header,omitempty"`
+	Branch      string   `toml:"branch,omitempty"`
+	StatusBarBG string   `toml:"status_bar_bg,omitempty"`
+	StatusBarFG string   `toml:"status_bar_fg,omitempty"`
+	Error       string   `toml:"error,omitempty"`
+	CursorBG    string   `toml:"cursor_bg,omitempty"`
+	GraphColors []string `toml:"graph_colors,omitempty"`
 
 	// Brutalist styling
-	PathDirFG          string            `toml:"path_dir_fg"`
-	PathFileFG         string            `toml:"path_file_fg"`
-	StatAddBG          string            `toml:"stat_add_bg"`
-	StatDelBG          string            `toml:"stat_del_bg"`
-	CommitDetailLabelFG string           `toml:"commit_detail_label_fg"`
-	SyncPushFG          string            `toml:"sync_push_fg"`
-	SyncPushBG          string            `toml:"sync_push_bg"`
-	SyncPullFG          string            `toml:"sync_pull_fg"`
-	SyncPullBG          string            `toml:"sync_pull_bg"`
-	SpinnerFG           string            `toml:"spinner_fg"`
-	SpinnerType         string            `toml:"spinner_type"`
-	FeedbackSuccessFG   string            `toml:"feedback_success_fg"`
-	FeedbackSuccessBG   string            `toml:"feedback_success_bg"`
-	FeedbackWarningFG   string            `toml:"feedback_warning_fg"`
-	FeedbackWarningBG   string            `toml:"feedback_warning_bg"`
-	FeedbackErrorFG     string            `toml:"feedback_error_fg"`
-	FeedbackErrorBG     string            `toml:"feedback_error_bg"`
-	FolderColors       map[string]string `toml:"folder_colors"`
-	PrefixColors       map[string]PrefixColor `toml:"prefix_colors"`
+	PathDirFG          string            `toml:"path_dir_fg,omitempty"`
+	PathFileFG         string            `toml:"path_file_fg,omitempty"`
+	StatAddBG          string            `toml:"stat_add_bg,omitempty"`
+	StatDelBG          string            `toml:"stat_del_bg,omitempty"`
+	CommitDetailLabelFG string           `toml:"commit_detail_label_fg,omitempty"`
+	SyncPushFG          string            `toml:"sync_push_fg,omitempty"`
+	SyncPushBG          string            `toml:"sync_push_bg,omitempty"`
+	SyncPullFG          string            `toml:"sync_pull_fg,omitempty"`
+	SyncPullBG          string            `toml:"sync_pull_bg,omitempty"`
+	SpinnerFG           string            `toml:"spinner_fg,omitempty"`
+	SpinnerType         string            `toml:"spinner_type,omitempty"`
+	FeedbackSuccessFG   string            `toml:"feedback_success_fg,omitempty"`
+	FeedbackSuccessBG   string            `toml:"feedback_success_bg,omitempty"`
+	FeedbackWarningFG   string            `toml:"feedback_warning_fg,omitempty"`
+	FeedbackWarningBG   string            `toml:"feedback_warning_bg,omitempty"`
+	FeedbackErrorFG     string            `toml:"feedback_error_fg,omitempty"`
+	FeedbackErrorBG     string            `toml:"feedback_error_bg,omitempty"`
+	FolderColors       map[string]string `toml:"folder_colors,omitempty"`
+	PrefixColors       map[string]PrefixColor `toml:"prefix_colors,omitempty"`
 }
 
 type PrefixColor struct {
@@ -79,15 +79,15 @@ type RepoConfig struct {
 }
 
 type DisplayConfig struct {
-	Icons           bool           `toml:"icons"`
-	NerdFonts       bool           `toml:"nerd_fonts"`
-	GroupFolders    bool           `toml:"group_folders"`
-	GroupDocs       bool           `toml:"group_docs"`
-	Priority        []PriorityRule `toml:"priority"`
-	GraphMaxCommits int            `toml:"graph_max_commits"`
-	ShowGraph       *bool          `toml:"show_graph"`
-	ShowConductor   *bool          `toml:"show_conductor"`
-	DashboardWidth  int            `toml:"dashboard_width"` // percentage, default 25 (with conductor) or 50 (without)
+	Icons           bool           `toml:"icons,omitempty"`
+	NerdFonts       bool           `toml:"nerd_fonts,omitempty"`
+	GroupFolders    bool           `toml:"group_folders,omitempty"`
+	GroupDocs       bool           `toml:"group_docs,omitempty"`
+	Priority        []PriorityRule `toml:"priority,omitempty"`
+	GraphMaxCommits int            `toml:"graph_max_commits,omitempty"`
+	ShowGraph       *bool          `toml:"show_graph,omitempty"`
+	ShowConductor   *bool          `toml:"show_conductor,omitempty"`
+	DashboardWidth  int            `toml:"dashboard_width,omitempty"` // percentage, default 25 (with conductor) or 50 (without)
 }
 
 type PriorityRule struct {
@@ -386,4 +386,92 @@ func pick(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// saveable types for writing config back to TOML without internal fields
+
+type saveableConfig struct {
+	Theme     ThemeConfig       `toml:"theme,omitempty"`
+	Workspace WorkspaceInfo     `toml:"workspace"`
+	Projects  []saveableProject `toml:"project,omitempty"`
+	Display   DisplayConfig     `toml:"display,omitempty"`
+}
+
+type saveableProject struct {
+	Name  string         `toml:"name"`
+	Path  string         `toml:"path,omitempty"`
+	Repos []saveableRepo `toml:"repo,omitempty"`
+}
+
+type saveableRepo struct {
+	Path           string   `toml:"path"`
+	IgnorePatterns []string `toml:"ignore_patterns,omitempty"`
+}
+
+// Save writes the config back to a TOML file, converting absolute paths to relative.
+func Save(path string, cfg Config) error {
+	configDir := filepath.Dir(path)
+	absConfigDir, err := filepath.Abs(configDir)
+	if err != nil {
+		return fmt.Errorf("resolving config directory: %w", err)
+	}
+
+	sc := saveableConfig{
+		Theme:     cfg.Theme,
+		Workspace: cfg.Workspace,
+		Display:   cfg.Display,
+	}
+
+	for _, proj := range cfg.Projects {
+		sp := saveableProject{
+			Name: proj.Name,
+		}
+
+		// Convert project path to relative
+		if proj.Path != "" {
+			rel, err := filepath.Rel(absConfigDir, proj.Path)
+			if err == nil {
+				sp.Path = rel
+			} else {
+				sp.Path = proj.Path
+			}
+		}
+
+		for _, repo := range proj.Repos {
+			sr := saveableRepo{
+				IgnorePatterns: repo.IgnorePatterns,
+			}
+
+			// Convert repo path to relative (against project path if set, else config dir)
+			base := absConfigDir
+			if proj.Path != "" {
+				base = proj.Path
+			}
+			rel, err := filepath.Rel(base, repo.Path)
+			if err == nil {
+				sr.Path = rel
+			} else {
+				sr.Path = repo.Path
+			}
+
+			sp.Repos = append(sp.Repos, sr)
+		}
+
+		sc.Projects = append(sc.Projects, sp)
+	}
+
+	data, err := toml.Marshal(sc)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+
+	return nil
 }
