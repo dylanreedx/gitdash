@@ -2,6 +2,9 @@ package projectmanager
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -48,6 +51,12 @@ type FlatItem struct {
 	Label        string
 }
 
+type DirEntry struct {
+	AbsPath string
+	RelPath string
+	HasGit  bool
+}
+
 type inputField int
 
 const (
@@ -74,9 +83,17 @@ type Model struct {
 	addToProject int // project index for adding repo
 	editItem     int // flat item index being edited
 	deleteItem   int // flat item index being deleted
+
+	// Dir finder
+	configDir    string
+	allDirs      []DirEntry
+	filteredDirs []DirEntry
+	dirCursor    int
+	dirScroll    int
+	showDirList  bool
 }
 
-func New() Model {
+func New(configDir string) Model {
 	ni := textinput.New()
 	ni.Placeholder = "project name..."
 	ni.CharLimit = 100
@@ -88,6 +105,7 @@ func New() Model {
 	return Model{
 		nameInput: ni,
 		pathInput: pi,
+		configDir: configDir,
 	}
 }
 
@@ -137,17 +155,138 @@ func (m *Model) rebuildFlatItems() {
 	}
 }
 
-func (m *Model) ensureCursorVisible() {
-	visibleH := m.height - 6 // title + footer + padding
-	if visibleH < 1 {
-		visibleH = 1
+// listHeight returns how many items fit in the visible area.
+func (m Model) listHeight() int {
+	h := m.height - 6 // title + footer + padding
+	if h < 1 {
+		h = 1
 	}
+	return h
+}
+
+func (m *Model) ensureCursorVisible() {
+	h := m.listHeight()
 	if m.cursor < m.scrollOffset {
 		m.scrollOffset = m.cursor
 	}
-	if m.cursor >= m.scrollOffset+visibleH {
-		m.scrollOffset = m.cursor - visibleH + 1
+	if m.cursor >= m.scrollOffset+h {
+		m.scrollOffset = m.cursor - h + 1
 	}
+}
+
+// walkDirs recursively collects directories up to maxDepth, skipping hidden dirs.
+func walkDirs(root string, maxDepth int) []DirEntry {
+	var result []DirEntry
+	var walk func(dir string, relPrefix string, depth int)
+	walk = func(dir string, relPrefix string, depth int) {
+		if depth > maxDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			absPath := filepath.Join(dir, e.Name())
+			relPath := filepath.Join(relPrefix, e.Name())
+			hasGit := false
+			if info, err := os.Stat(filepath.Join(absPath, ".git")); err == nil && info.IsDir() {
+				hasGit = true
+			}
+			result = append(result, DirEntry{
+				AbsPath: absPath,
+				RelPath: relPath,
+				HasGit:  hasGit,
+			})
+			walk(absPath, relPath, depth+1)
+		}
+	}
+	walk(root, "", 1)
+	return result
+}
+
+// scanDirs populates allDirs and filteredDirs from root. When preferGit is true,
+// git-containing dirs are sorted first.
+func (m *Model) scanDirs(root string, preferGit bool) {
+	m.allDirs = walkDirs(root, 3)
+	if preferGit {
+		sort.SliceStable(m.allDirs, func(i, j int) bool {
+			if m.allDirs[i].HasGit != m.allDirs[j].HasGit {
+				return m.allDirs[i].HasGit
+			}
+			return false
+		})
+	}
+	m.filteredDirs = m.allDirs
+	m.dirCursor = 0
+	m.dirScroll = 0
+}
+
+// scanRootForMode returns the directory to scan based on the current mode.
+func (m *Model) scanRootForMode() string {
+	switch m.mode {
+	case ModeAddRepo:
+		if m.addToProject < len(m.projects) {
+			if p := m.projects[m.addToProject].Path; p != "" {
+				return p
+			}
+		}
+		return m.configDir
+	case ModeAddProject, ModeEdit:
+		parent := filepath.Dir(m.configDir)
+		if parent != "" && parent != "." {
+			return parent
+		}
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return home
+		}
+		return m.configDir
+	}
+	return m.configDir
+}
+
+// applyDirFilter filters allDirs by the current pathInput value (case-insensitive substring).
+func (m *Model) applyDirFilter() {
+	query := strings.ToLower(m.pathInput.Value())
+	if query == "" {
+		m.filteredDirs = m.allDirs
+	} else {
+		m.filteredDirs = nil
+		for _, d := range m.allDirs {
+			if strings.Contains(strings.ToLower(d.RelPath), query) {
+				m.filteredDirs = append(m.filteredDirs, d)
+			}
+		}
+	}
+	if m.dirCursor >= len(m.filteredDirs) {
+		m.dirCursor = max(0, len(m.filteredDirs)-1)
+	}
+	m.ensureDirCursorVisible()
+}
+
+const dirMaxVisible = 8
+
+// ensureDirCursorVisible keeps the dir cursor in the visible scroll window.
+func (m *Model) ensureDirCursorVisible() {
+	if m.dirCursor < m.dirScroll {
+		m.dirScroll = m.dirCursor
+	}
+	if m.dirCursor >= m.dirScroll+dirMaxVisible {
+		m.dirScroll = m.dirCursor - dirMaxVisible + 1
+	}
+}
+
+// resetDirFinder clears the dir finder state.
+func (m *Model) resetDirFinder() {
+	m.allDirs = nil
+	m.filteredDirs = nil
+	m.dirCursor = 0
+	m.dirScroll = 0
+	m.showDirList = false
 }
 
 // InInputMode returns true when a text input is active.
@@ -197,6 +336,9 @@ func (m *Model) handleBrowseKey(msg tea.KeyMsg) KeyResult {
 		m.pathInput.SetValue("")
 		m.nameInput.Focus()
 		m.pathInput.Blur()
+		// Pre-scan dirs but don't show yet (name field is first)
+		m.scanDirs(m.scanRootForMode(), false)
+		m.showDirList = false
 	case "a":
 		if len(m.flatItems) > 0 {
 			item := m.flatItems[m.cursor]
@@ -204,6 +346,8 @@ func (m *Model) handleBrowseKey(msg tea.KeyMsg) KeyResult {
 			m.mode = ModeAddRepo
 			m.pathInput.SetValue("")
 			m.pathInput.Focus()
+			m.scanDirs(m.scanRootForMode(), true)
+			m.showDirList = true
 		}
 	case "e":
 		if len(m.flatItems) > 0 {
@@ -217,12 +361,17 @@ func (m *Model) handleBrowseKey(msg tea.KeyMsg) KeyResult {
 				m.activeField = fieldName
 				m.nameInput.Focus()
 				m.pathInput.Blur()
+				m.scanDirs(m.scanRootForMode(), false)
+				m.showDirList = false // name field is first
 			} else {
 				repo := m.projects[item.ProjectIndex].Repos[item.RepoIndex]
 				m.pathInput.SetValue(repo.Path)
 				m.activeField = fieldPath
 				m.pathInput.Focus()
 				m.nameInput.Blur()
+				m.scanDirs(m.scanRootForMode(), true)
+				m.showDirList = true
+				m.applyDirFilter() // filter with pre-filled path
 			}
 		}
 	case "x":
@@ -235,20 +384,49 @@ func (m *Model) handleBrowseKey(msg tea.KeyMsg) KeyResult {
 }
 
 func (m *Model) handleAddProjectKey(msg tea.KeyMsg) KeyResult {
+	// Dir list navigation when showing and path field is focused
+	if m.showDirList && m.activeField == fieldPath {
+		switch msg.String() {
+		case "ctrl+n", "down":
+			if m.dirCursor < len(m.filteredDirs)-1 {
+				m.dirCursor++
+				m.ensureDirCursorVisible()
+			}
+			return KeyResult{Action: ActionNone}
+		case "ctrl+p", "up":
+			if m.dirCursor > 0 {
+				m.dirCursor--
+				m.ensureDirCursorVisible()
+			}
+			return KeyResult{Action: ActionNone}
+		case "enter":
+			if len(m.filteredDirs) > 0 {
+				selected := m.filteredDirs[m.dirCursor]
+				m.pathInput.SetValue(selected.AbsPath)
+				m.showDirList = false
+				return KeyResult{Action: ActionNone}
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeBrowse
 		m.nameInput.Blur()
 		m.pathInput.Blur()
+		m.resetDirFinder()
 	case "tab":
 		if m.activeField == fieldName {
 			m.activeField = fieldPath
 			m.nameInput.Blur()
 			m.pathInput.Focus()
+			m.showDirList = true
+			m.applyDirFilter()
 		} else {
 			m.activeField = fieldName
 			m.pathInput.Blur()
 			m.nameInput.Focus()
+			m.showDirList = false
 		}
 	case "enter":
 		name := strings.TrimSpace(m.nameInput.Value())
@@ -264,6 +442,7 @@ func (m *Model) handleAddProjectKey(msg tea.KeyMsg) KeyResult {
 		m.mode = ModeBrowse
 		m.nameInput.Blur()
 		m.pathInput.Blur()
+		m.resetDirFinder()
 		m.rebuildFlatItems()
 		m.cursor = len(m.flatItems) - 1
 		m.ensureCursorVisible()
@@ -272,10 +451,36 @@ func (m *Model) handleAddProjectKey(msg tea.KeyMsg) KeyResult {
 }
 
 func (m *Model) handleAddRepoKey(msg tea.KeyMsg) KeyResult {
+	// Dir list navigation
+	if m.showDirList {
+		switch msg.String() {
+		case "ctrl+n", "down":
+			if m.dirCursor < len(m.filteredDirs)-1 {
+				m.dirCursor++
+				m.ensureDirCursorVisible()
+			}
+			return KeyResult{Action: ActionNone}
+		case "ctrl+p", "up":
+			if m.dirCursor > 0 {
+				m.dirCursor--
+				m.ensureDirCursorVisible()
+			}
+			return KeyResult{Action: ActionNone}
+		case "enter":
+			if len(m.filteredDirs) > 0 {
+				selected := m.filteredDirs[m.dirCursor]
+				m.pathInput.SetValue(selected.AbsPath)
+				m.showDirList = false
+				return KeyResult{Action: ActionNone}
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeBrowse
 		m.pathInput.Blur()
+		m.resetDirFinder()
 	case "enter":
 		path := strings.TrimSpace(m.pathInput.Value())
 		if path == "" {
@@ -288,6 +493,7 @@ func (m *Model) handleAddRepoKey(msg tea.KeyMsg) KeyResult {
 		m.changed = true
 		m.mode = ModeBrowse
 		m.pathInput.Blur()
+		m.resetDirFinder()
 		m.rebuildFlatItems()
 		m.ensureCursorVisible()
 	}
@@ -296,21 +502,51 @@ func (m *Model) handleAddRepoKey(msg tea.KeyMsg) KeyResult {
 
 func (m *Model) handleEditKey(msg tea.KeyMsg) KeyResult {
 	item := m.flatItems[m.editItem]
+
+	// Dir list navigation when showing and path field is focused
+	if m.showDirList && m.activeField == fieldPath {
+		switch msg.String() {
+		case "ctrl+n", "down":
+			if m.dirCursor < len(m.filteredDirs)-1 {
+				m.dirCursor++
+				m.ensureDirCursorVisible()
+			}
+			return KeyResult{Action: ActionNone}
+		case "ctrl+p", "up":
+			if m.dirCursor > 0 {
+				m.dirCursor--
+				m.ensureDirCursorVisible()
+			}
+			return KeyResult{Action: ActionNone}
+		case "enter":
+			if len(m.filteredDirs) > 0 {
+				selected := m.filteredDirs[m.dirCursor]
+				m.pathInput.SetValue(selected.AbsPath)
+				m.showDirList = false
+				return KeyResult{Action: ActionNone}
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeBrowse
 		m.nameInput.Blur()
 		m.pathInput.Blur()
+		m.resetDirFinder()
 	case "tab":
 		if item.Kind == ProjectItem {
 			if m.activeField == fieldName {
 				m.activeField = fieldPath
 				m.nameInput.Blur()
 				m.pathInput.Focus()
+				m.showDirList = true
+				m.applyDirFilter()
 			} else {
 				m.activeField = fieldName
 				m.pathInput.Blur()
 				m.nameInput.Focus()
+				m.showDirList = false
 			}
 		}
 	case "enter":
@@ -332,6 +568,7 @@ func (m *Model) handleEditKey(msg tea.KeyMsg) KeyResult {
 		m.mode = ModeBrowse
 		m.nameInput.Blur()
 		m.pathInput.Blur()
+		m.resetDirFinder()
 		m.rebuildFlatItems()
 	}
 	return KeyResult{Action: ActionNone}
@@ -364,15 +601,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	pathUpdated := false
 	switch m.mode {
 	case ModeAddProject, ModeEdit:
 		if m.activeField == fieldName {
 			m.nameInput, cmd = m.nameInput.Update(msg)
 		} else {
 			m.pathInput, cmd = m.pathInput.Update(msg)
+			pathUpdated = true
 		}
 	case ModeAddRepo:
 		m.pathInput, cmd = m.pathInput.Update(msg)
+		pathUpdated = true
+	}
+	if pathUpdated && m.showDirList {
+		m.applyDirFilter()
 	}
 	return m, cmd
 }
@@ -403,17 +646,21 @@ func (m Model) View() string {
 	b.WriteString("\n\n")
 
 	// Footer help
+	dirHint := ""
+	if m.showDirList {
+		dirHint = "  ctrl+n/p: dirs  "
+	}
 	switch m.mode {
 	case ModeAddProject:
-		b.WriteString(shared.HelpDescStyle.Render("tab: switch field  enter: create  esc: cancel"))
+		b.WriteString(shared.HelpDescStyle.Render("tab: switch field" + dirHint + "  enter: create  esc: cancel"))
 	case ModeAddRepo:
-		b.WriteString(shared.HelpDescStyle.Render("enter: add  esc: cancel"))
+		b.WriteString(shared.HelpDescStyle.Render(dirHint + "enter: select/add  esc: cancel"))
 	case ModeEdit:
 		item := m.flatItems[m.editItem]
 		if item.Kind == ProjectItem {
-			b.WriteString(shared.HelpDescStyle.Render("tab: switch field  enter: save  esc: cancel"))
+			b.WriteString(shared.HelpDescStyle.Render("tab: switch field" + dirHint + "  enter: save  esc: cancel"))
 		} else {
-			b.WriteString(shared.HelpDescStyle.Render("enter: save  esc: cancel"))
+			b.WriteString(shared.HelpDescStyle.Render(dirHint + "enter: select/save  esc: cancel"))
 		}
 	case ModeConfirmDelete:
 		b.WriteString(shared.HelpDescStyle.Render("y: confirm delete  n/esc: cancel"))
@@ -436,10 +683,7 @@ func (m Model) renderBrowse() string {
 	}
 
 	var b strings.Builder
-	visibleH := m.height - 8
-	if visibleH < 1 {
-		visibleH = 1
-	}
+	visibleH := m.listHeight()
 
 	end := m.scrollOffset + visibleH
 	if end > len(m.flatItems) {
@@ -502,8 +746,11 @@ func (m Model) renderAddProject() string {
 	b.WriteString("\n")
 	b.WriteString(pathLabel)
 	b.WriteString(m.pathInput.View())
-	b.WriteString("\n")
-	b.WriteString(shared.HelpDescStyle.Render("  (path is optional — project root for conductor.db)"))
+	b.WriteString(m.renderDirList())
+	if !m.showDirList {
+		b.WriteString("\n")
+		b.WriteString(shared.HelpDescStyle.Render("  (path is optional — project root for conductor.db)"))
+	}
 
 	return b.String()
 }
@@ -518,6 +765,7 @@ func (m Model) renderAddRepo() string {
 	b.WriteString("\n\n")
 	b.WriteString(shared.BranchStyle.Render("Path: "))
 	b.WriteString(m.pathInput.View())
+	b.WriteString(m.renderDirList())
 	return b.String()
 }
 
@@ -552,6 +800,44 @@ func (m Model) renderEdit() string {
 		b.WriteString("\n\n")
 		b.WriteString(shared.BranchStyle.Render("Path: "))
 		b.WriteString(m.pathInput.View())
+	}
+
+	b.WriteString(m.renderDirList())
+	return b.String()
+}
+
+func (m Model) renderDirList() string {
+	if !m.showDirList || len(m.filteredDirs) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n")
+
+	end := m.dirScroll + dirMaxVisible
+	if end > len(m.filteredDirs) {
+		end = len(m.filteredDirs)
+	}
+
+	for i := m.dirScroll; i < end; i++ {
+		d := m.filteredDirs[i]
+		line := "  " + d.RelPath
+		if d.HasGit {
+			line += " " + shared.BranchStyle.Render("[git]")
+		}
+		if i == m.dirCursor {
+			line = shared.CursorStyle.Render(line)
+		} else {
+			line = shared.DimFileStyle.Render(line)
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	remaining := len(m.filteredDirs) - end
+	if remaining > 0 {
+		b.WriteString(shared.HelpDescStyle.Render(fmt.Sprintf("  %d more...", remaining)))
+		b.WriteString("\n")
 	}
 
 	return b.String()

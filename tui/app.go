@@ -114,7 +114,7 @@ func NewApp(cfg config.Config, configPath string) App {
 		branchPicker:   branchpicker.New(),
 		conductorPane:  conductorpane.New(),
 		featureLinker:  featurelinker.New(),
-		projectManager: projectmanager.New(),
+		projectManager: projectmanager.New(filepath.Dir(configPath)),
 		showGraph:      cfg.ResolvedShowGraph(),
 		showConductor:  cfg.ResolvedShowConductor(),
 		focusPanel:     FocusDashboard,
