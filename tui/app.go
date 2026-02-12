@@ -23,6 +23,7 @@ import (
 	"github.com/dylan/gitdash/tui/featurelinker"
 	"github.com/dylan/gitdash/tui/graphpane"
 	"github.com/dylan/gitdash/tui/help"
+	"github.com/dylan/gitdash/tui/projectmanager"
 	"github.com/dylan/gitdash/tui/icons"
 	"github.com/dylan/gitdash/tui/shared"
 )
@@ -66,6 +67,7 @@ type App struct {
 	branchPicker   branchpicker.Model
 	conductorPane  conductorpane.Model
 	featureLinker  featurelinker.Model
+	projectManager projectmanager.Model
 
 	showGraph       bool
 	showConductor   bool
@@ -112,6 +114,7 @@ func NewApp(cfg config.Config, configPath string) App {
 		branchPicker:   branchpicker.New(),
 		conductorPane:  conductorpane.New(),
 		featureLinker:  featurelinker.New(),
+		projectManager: projectmanager.New(),
 		showGraph:      cfg.ResolvedShowGraph(),
 		showConductor:  cfg.ResolvedShowConductor(),
 		focusPanel:     FocusDashboard,
@@ -178,6 +181,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.helpView.SetSize(msg.Width, msg.Height)
 		a.branchPicker.SetSize(msg.Width, msg.Height)
 		a.featureLinker.SetSize(msg.Width, msg.Height)
+		a.projectManager.SetSize(msg.Width, msg.Height)
 		return a, nil
 
 	case shared.LoaderStartMsg:
@@ -485,6 +489,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		a.branchPicker, cmd = a.branchPicker.Update(msg)
 		return a, cmd
+	case ProjectManagerView:
+		var cmd tea.Cmd
+		a.projectManager, cmd = a.projectManager.Update(msg)
+		return a, cmd
 	}
 
 	return a, nil
@@ -518,6 +526,8 @@ func (a App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleCommitKey(msg)
 	case BranchPickerView:
 		return a.handleBranchPickerKey(msg)
+	case ProjectManagerView:
+		return a.handleProjectManagerKey(msg)
 	}
 
 	return a, nil
@@ -695,6 +705,12 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, shared.Keys.ContextSummary):
 			spinCmd := a.startLoader(shared.OpExport, "Exporting context")
 			return a, tea.Batch(spinCmd, exportContextCmd(a.cfg, 7))
+
+		case key.Matches(msg, shared.Keys.ProjectManager):
+			a.projectManager.SetSize(a.width, a.height)
+			a.projectManager.SetProjects(a.cfg.Projects)
+			a.activeView = ProjectManagerView
+			return a, nil
 		}
 
 		return a, nil
@@ -769,6 +785,12 @@ func (a App) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, shared.Keys.ContextSummary):
 		spinCmd := a.startLoader(shared.OpExport, "Exporting context")
 		return a, tea.Batch(spinCmd, exportContextCmd(a.cfg, 7))
+
+	case key.Matches(msg, shared.Keys.ProjectManager):
+		a.projectManager.SetSize(a.width, a.height)
+		a.projectManager.SetProjects(a.cfg.Projects)
+		a.activeView = ProjectManagerView
+		return a, nil
 
 	case key.Matches(msg, shared.Keys.Branch):
 		repo, ok := a.dashboard.SelectedRepo()
@@ -981,6 +1003,53 @@ func (a App) handleBranchPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+func (a App) handleProjectManagerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// If in input mode, let textinput handle the key first
+	if a.projectManager.InInputMode() {
+		result := a.projectManager.HandleKey(msg)
+		if result.Action == projectmanager.ActionNone {
+			// Forward to textinput for character input
+			var cmd tea.Cmd
+			a.projectManager, cmd = a.projectManager.Update(msg)
+			return a, cmd
+		}
+		return a.processProjectManagerResult(result)
+	}
+
+	result := a.projectManager.HandleKey(msg)
+	return a.processProjectManagerResult(result)
+}
+
+func (a App) processProjectManagerResult(result projectmanager.KeyResult) (tea.Model, tea.Cmd) {
+	if result.Action != projectmanager.ActionClose {
+		return a, nil
+	}
+
+	a.activeView = DashboardView
+
+	if !result.Changed {
+		return a, nil
+	}
+
+	// Save config, reload, and refresh
+	a.cfg.Projects = result.Projects
+	if err := config.Save(a.configPath, a.cfg); err != nil {
+		a.setFeedback(shared.FeedbackError, "Save failed: "+err.Error(), err.Error(), "")
+		return a, nil
+	}
+
+	newCfg, err := config.Load(a.configPath)
+	if err != nil {
+		a.setFeedback(shared.FeedbackError, "Reload failed: "+err.Error(), err.Error(), "")
+		return a, nil
+	}
+
+	a.cfg = newCfg
+	a.dashboard.SetProjects(a.cfg.Projects)
+	a.setFeedback(shared.FeedbackSuccess, "Config saved", "", "")
+	return a, refreshAllStatus(a.cfg)
+}
+
 func (a App) View() string {
 	if a.showHelp {
 		return a.helpView.View()
@@ -1013,6 +1082,8 @@ func (a App) View() string {
 		view = a.diffView.View()
 	case CommitView:
 		view = a.commitView.View()
+	case ProjectManagerView:
+		view = a.projectManager.View()
 	}
 
 	return view
